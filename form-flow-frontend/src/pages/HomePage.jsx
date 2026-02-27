@@ -22,6 +22,8 @@ const HomePage = () => {
     const [showCompletion, setShowCompletion] = useState(false);
     const [pdfId, setPdfId] = useState(null); // For PDF form filling
 
+    console.log("the url found is",url)
+
     const handleSubmit = async (e, submittedUrl = null) => {
         if (e && e.preventDefault) e.preventDefault();
         setLoading(true);
@@ -158,6 +160,7 @@ const HomePage = () => {
                 initialFilledData={result.magic_fill_data}
                 onComplete={handleVoiceComplete}
                 onClose={() => setShowVoiceForm(false)}
+                formUrl={scrapedUrl} 
             />
         );
     }

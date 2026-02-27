@@ -10,7 +10,7 @@ const getBaseUrl = () => {
     if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
     // Fallback to same hostname on port 8001 (dev assumption) or relative (prod)
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        return `http://${window.location.hostname}:8001`;
+        return `http://${window.location.hostname}:8000`;
     }
     return '/api'; // Production proxy usually
 };
@@ -537,27 +537,27 @@ export const confirmConversationValue = async (sessionId, fieldName, confirmedVa
  * @param {number} nResults - Max suggestions to return
  * @returns {Promise<{suggestions: string[], field_name: string}>}
  */
-export const getSuggestions = async (
-    fieldName,
-    fieldLabel = null,
-    fieldType = 'text',
-    currentValue = null,
-    nResults = 5
-) => {
-    try {
-        const response = await api.post('/suggestions', {
-            field_name: fieldName,
-            field_label: fieldLabel,
-            field_type: fieldType,
-            current_value: currentValue,
-            n_results: nResults
-        });
-        return response.data;
-    } catch (error) {
-        console.warn('[getSuggestions] Failed:', error.message);
-        return { suggestions: [], field_name: fieldName };
-    }
-};
+// export const getSuggestions = async (
+//     fieldName,
+//     fieldLabel = null,
+//     fieldType = 'text',
+//     currentValue = null,
+//     nResults = 5
+// ) => {
+//     try {
+//         const response = await api.post('/suggestions', {
+//             field_name: fieldName,
+//             field_label: fieldLabel,
+//             field_type: fieldType,
+//             current_value: currentValue,
+//             n_results: nResults
+//         });
+//         return response.data;
+//     } catch (error) {
+//         console.warn('[getSuggestions] Failed:', error.message);
+//         return { suggestions: [], field_name: fieldName };
+//     }
+// };
 
 /**
  * Get intelligent profile-based suggestions for a form field
@@ -582,7 +582,9 @@ export const getSmartSuggestions = async (
     fieldLabel = null,
     fieldType = 'text',
     formPurpose = 'General',
-    previousAnswers = {}
+    previousAnswers = {},
+    formUrl = null,          // ← ADD
+    allFieldLabels = []      // ← ADD
 ) => {
     try {
         const response = await api.post('/smart-suggestions', {
@@ -590,7 +592,9 @@ export const getSmartSuggestions = async (
             field_label: fieldLabel,
             field_type: fieldType,
             form_purpose: formPurpose,
-            previous_answers: previousAnswers
+            previous_answers: previousAnswers,
+            form_url: formUrl ,   // ← ADD (fallback to current page)
+            all_field_labels: allFieldLabels             // ← ADD
         });
         return response.data;
     } catch (error) {

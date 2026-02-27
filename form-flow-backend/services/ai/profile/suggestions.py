@@ -91,12 +91,13 @@ class ProfileSuggestionEngine:
                 return await self._tier1_profile_based(profile, field_context, form_context, previous_answers, form_intent)
             else:
                 # STRICT: No profile = No suggestions.
-                logger.warning("⛔ [Lifecycle] No Profile found. Skipping Tier 3 fallback (returning empty).")
-                return []
+                logger.info("🌱 [Lifecycle] No Profile found. Attempting Tier 0: Cold-Start suggestions.")
+                return await self._tier0_cold_start(field_context, form_context, previous_answers, form_intent)
                 
         except Exception as e:
             logger.error(f"❌ [Lifecycle] CRITICAL ERROR: {str(e)}", exc_info=True)
             return []
+
     
     async def _tier1_profile_based(
         self,
@@ -121,6 +122,28 @@ class ProfileSuggestionEngine:
         except Exception as e:
             logger.error(f"❌ [Lifecycle] Tier 1: LLM Failed ({str(e)})")
             return [] # STRICT: Return empty instead of fallback
+        
+    def _format_profile_for_prompt(self, profile: Any) -> str:
+            """Extract and structure profile data for better LLM consumption."""
+            profile_text = getattr(profile, 'profile_text', None)
+    
+            if not profile_text:
+                return str(profile)
+            
+            try:
+                parsed = json.loads(profile_text) if isinstance(profile_text, str) else profile_text
+                
+                # If it's already structured JSON, format it clearly
+                if isinstance(parsed, dict):
+                    sections = []
+                    for key, value in parsed.items():
+                        label = key.replace("_", " ").title()
+                        sections.append(f"- {label}: {value}")
+                    return "\n".join(sections)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            
+            return str(profile_text)
 
     async def _generate_llm_suggestions(
         self,
@@ -142,7 +165,18 @@ class ProfileSuggestionEngine:
             return None
 
         # Extract profile text safely
-        profile_text = getattr(profile, 'profile_text', str(profile))
+        profile_text = self._format_profile_for_prompt(profile)
+
+        # ADD ↓
+        form_count = getattr(profile, 'form_count', 1)
+        try:
+            metadata = json.loads(getattr(profile, 'metadata_json', '{}') or '{}')
+        except Exception:
+            metadata = {}
+        forms_history = metadata.get('forms_analyzed', [])
+        history_str = ", ".join(forms_history[-5:]) if forms_history else "None"
+        maturity_hint = "mature — trust it heavily" if form_count >= 5 else "early stage — use as a hint, stay flexible"
+
         
         # Context extraction
         field_name = field_context.get("name", "unknown")
@@ -189,6 +223,8 @@ INSTRUCTIONS:
 4.  **Guardrail:** NEVER describe the user in the third person (e.g., "User exhibits...") unless the form_type is explicitly 'diagnostic_report'.
 
 5.  **Output:** Return a JSON object with a list of 1-3 suggestions and your reasoning. The reasoning MUST mention the detected Form Intent.
+6.  **Profile Maturity:** The user has filled {form_count} forms — profile is {maturity_hint}. Weight suggestions accordingly.
+7.  **Past Forms:** They've previously filled: {forms_history}. Use this to infer domain or recurring needs.
 
 FORMAT:
 {{
@@ -212,6 +248,9 @@ FORMAT:
                 "field_name": field_name,
                 "persona": persona,
                 "previous_answers_context": previous_answers_str,
+                "form_count": form_count,
+                "maturity_hint": maturity_hint,
+                "forms_history": history_str,
             })
             
             duration = (datetime.now() - start_time).total_seconds()
@@ -259,6 +298,83 @@ FORMAT:
         # DISABLED as per request
         logger.info("🧩 [Lifecycle] Tier 3 requested but DISABLED.")
         return []
+    async def _tier0_cold_start(
+            self,
+            field_context: Dict[str, Any],
+            form_context: Dict[str, Any],
+            previous_answers: Dict[str, str],
+            form_intent: Optional[FormIntent]
+        ) -> List[IntelligentSuggestion]:
+            """
+            Tier 0: Cold-start suggestions for users with no profile.
+            Uses only form intent + field semantics to generate contextual placeholders.
+            """
+            gemini = get_gemini_service()
+            if not gemini or not gemini.llm:
+                return []
+
+            field_label = field_context.get("label", field_context.get("name", "unknown"))
+            form_purpose = form_intent.intent if form_intent else form_context.get("purpose", "General Form")
+            persona = form_intent.persona if form_intent else "Customer"
+
+            previous_answers_str = "None"
+            if previous_answers:
+                previous_answers_str = "\n".join([f"- {k}: {v}" for k, v in previous_answers.items() if v])
+
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a smart form-filling assistant helping a first-time user.
+        You have NO prior information about this user. Generate helpful, realistic example suggestions 
+        for the field based ONLY on the form's purpose and previously filled fields.
+
+        CONTEXT:
+        - Form Intent: {form_intent}
+        - Persona: {persona}
+        - Field: "{field_label}"
+        - Previously Filled Fields:
+        {previous_answers_context}
+
+        INSTRUCTIONS:
+        1. Generate 2-3 realistic, generic-but-useful example values a typical {persona} would enter.
+        2. Use the form intent to tailor suggestions (e.g., for "Job Application" + "Skills" field → "Python, FastAPI, SQL").
+        3. Use previous answers to stay consistent (e.g., if Role = "Designer", suggest design-related skills).
+        4. Keep suggestions short, realistic, and immediately usable.
+        5. Do NOT say "example" or "placeholder" - write as if the user would actually submit this.
+
+        FORMAT:
+        {{
+        "suggestions": ["Value 1", "Value 2"],
+        "reasoning": "Based on the form intent '{form_intent}', these are typical values a {persona} would provide."
+        }}
+        """)
+            ])
+
+            parser = JsonOutputParser(pydantic_object=SuggestionResponse)
+            chain = prompt | gemini.llm | parser
+
+            try:
+                result = await chain.ainvoke({
+                    "form_intent": form_purpose,
+                    "persona": persona,
+                    "field_label": field_label,
+                    "previous_answers_context": previous_answers_str,
+                })
+
+                if result and result.get("suggestions"):
+                    return [
+                        IntelligentSuggestion(
+                            value=val,
+                            confidence=0.55,  # Lower confidence - no profile backing
+                            tier=SuggestionTier.PATTERN_ONLY,
+                            reasoning=result.get("reasoning", "Cold-start suggestion based on form intent"),
+                            behavioral_match="cold_start_intent"
+                        )
+                        for val in result["suggestions"]
+                    ]
+            except Exception as e:
+                logger.error(f"❌ [Lifecycle] Tier 0 Cold Start Failed: {str(e)}")
+
+            return []
+        
 
 
 # Singleton instance

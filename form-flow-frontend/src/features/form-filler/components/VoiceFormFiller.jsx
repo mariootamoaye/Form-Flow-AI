@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Mic, MicOff, ChevronLeft, ChevronRight, SkipForward, Send, Volume2, Keyboard, Terminal, Activity, CheckCircle, Sparkles, X, Brain, Lightbulb } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import api, { API_BASE_URL, refineText, sendConversationMessage, getSuggestions, getSmartSuggestions, startConversationSession } from '@/services/api';
-import { instantFillFromProfile, extractFillableFields } from '../utils/instantFill';
-import AttachmentField from './AttachmentField';
+import api, { API_BASE_URL, refineText, sendConversationMessage,  getSmartSuggestions } from '@/services/api';
 
-const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, onComplete, onClose }) => {
+const VoiceFormFiller = ({ formSchema, formContext, formUrl, onComplete, onClose }) => {
     const [isListening, setIsListening] = useState(false);
     const [currentFieldIndex, setCurrentFieldIndex] = useState(0);
     const [formData, setFormData] = useState({});
@@ -24,10 +22,9 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
     const hesitationTimerRef = useRef(null);
     const questionsAnsweredRef = useRef(0);
 
-    // Magic Fill State - Now starts as FALSE for instant load
-    const [magicFillLoading, setMagicFillLoading] = useState(false);
+    // Magic Fill State
+    const [magicFillLoading, setMagicFillLoading] = useState(true);
     const [magicFillSummary, setMagicFillSummary] = useState('');
-    const [aiEnhancing, setAiEnhancing] = useState(false); // Background AI status
 
     // Refs
     const recognitionRef = useRef(null);
@@ -137,125 +134,113 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
         };
         load();
     }, []);
+    useEffect(() => {
+    if (!lastFilled) return;
+    const t = setTimeout(() => setLastFilled(null), 2000);
+    return () => clearTimeout(t);
+}, [lastFilled]);
 
-    // 🪄 INSTANT FILL + BACKGROUND AI ENHANCEMENT
+    // 🪄 MAGIC FILL & CONVERSATION START
     useEffect(() => {
         const init = async () => {
             if (!formSchema?.length) return;
-            if (sessionId) return; // Already initialized
+            // Only wait for profile if we are actually intending to use it for magic fill
+            if (magicFillLoading && userProfile === null) return;
 
             let currentData = { ...formDataRef.current };
 
-            // -- STEP 1: INSTANT RULE-BASED FILL (No waiting!) --
-            if (userProfile) {
-                console.log('⚡ Applying Instant Fill...');
-                const fields = extractFillableFields(formSchema);
-                const { filled, matched } = instantFillFromProfile(fields, userProfile);
-
-                if (matched > 0) {
-                    setAutoFilledFields(prev => ({ ...prev, ...filled }));
-                    setFormData(prev => ({ ...prev, ...filled }));
-                    formDataRef.current = { ...formDataRef.current, ...filled };
-                    currentData = { ...currentData, ...filled };
-                    setMagicFillSummary(`Instantly filled ${matched} fields`);
-
-                    // Smart jump to first unfilled field
-                    const firstUnfilled = allFields.findIndex(f => !filled[f.name] && !formDataRef.current[f.name]);
-                    if (firstUnfilled > 0 && currentFieldIndex === 0) {
-                        setCurrentFieldIndex(firstUnfilled);
-                        indexRef.current = firstUnfilled;
-                    }
-                }
-            }
-
-            // -- STEP 2: START CONVERSATION SESSION IMMEDIATELY --
-            try {
-                console.log('💬 Starting Conversation Session...');
-                const sessionRes = await startConversationSession(formSchema, window.location.href, currentData, 'web');
-                console.log('💬 Session Started:', sessionRes);
-                setSessionId(sessionRes.session_id);
-
-                if (sessionRes.next_questions?.length > 0) {
-                    console.log('🎯 Initial Batch:', sessionRes.next_questions.map(f => f.name));
-                    setCurrentBatch(sessionRes.next_questions);
-                    const initialStatus = {};
-                    sessionRes.next_questions.forEach(f => {
-                        initialStatus[f.name] = formDataRef.current[f.name] ? 'filled' : 'pending';
+            // -- 1. Trigger Magic Fill (SEQUENTIAL: Wait for it) --
+            /* The following Magic Fill block has been commented out for testing smart suggestions.
+             * This ensures the form starts empty, allowing direct testing of the smart suggestions
+             * without pre-filled data influencing them.
+             */
+            if (userProfile && !sessionId && magicFillLoading) {
+                try {
+                    console.log('✨ Starting Magic Fill (Sequential)...');
+                    // We AWAIT this now, per user request, to ensure Agent knows about filled data
+                    // With 1.5-flash, this should only take ~3-4 seconds.
+                    const response = await api.post('/magic-fill', {
+                        form_schema: formSchema,
+                        user_profile: userProfile
                     });
-                    setBatchStatus(initialStatus);
-                }
 
-                if (sessionRes.greeting) {
-                    if (audioRef.current) {
-                        audioRef.current.pause();
-                        audioRef.current = null;
-                    }
-                    clearTimeout(idleTimeoutRef.current);
-                    window.speechSynthesis.cancel();
-                    const utter = new SpeechSynthesisUtterance(sessionRes.greeting);
-                    window.speechSynthesis.speak(utter);
-                    setAiResponse(sessionRes.greeting);
-                }
-            } catch (e) {
-                console.error('❌ Failed to start conversation session:', e);
-            }
-
-            // -- STEP 3: RUN AI MAGIC FILL IN BACKGROUND (Non-blocking) --
-            if (userProfile && !initialFilledData?.success) {
-                setAiEnhancing(true);
-                console.log('🤖 Starting background AI enhancement...');
-
-                // Fire and forget - don't await
-                api.post('/magic-fill', {
-                    form_schema: formSchema,
-                    user_profile: userProfile
-                }).then(response => {
                     if (response.data?.success && response.data.filled) {
                         const filled = response.data.filled;
-                        console.log('🤖 AI Enhancement complete:', Object.keys(filled).length, 'fields');
+                        console.log('✨ Magic Fill Completed:', Object.keys(filled).length);
 
-                        // Only update fields that weren't already filled
-                        const newFills = {};
-                        for (const [key, value] of Object.entries(filled)) {
-                            if (!formDataRef.current[key]) {
-                                newFills[key] = value;
-                            }
+                        setAutoFilledFields(prev => ({ ...prev, ...filled }));
+                        setFormData(prev => ({ ...prev, ...filled }));
+                        formDataRef.current = { ...formDataRef.current, ...filled };
+                        currentData = { ...currentData, ...filled };
+
+                        // Smart jump
+                        const firstUnfilled = allFields.findIndex(f => !filled[f.name] && !formDataRef.current[f.name]);
+                        if (firstUnfilled > 0 && currentFieldIndex === 0) {
+                            setCurrentFieldIndex(firstUnfilled);
+                            // Update ref for session start
+                            indexRef.current = firstUnfilled;
                         }
 
-                        if (Object.keys(newFills).length > 0) {
-                            setAutoFilledFields(prev => ({ ...prev, ...newFills }));
-                            setFormData(prev => ({ ...prev, ...newFills }));
-                            formDataRef.current = { ...formDataRef.current, ...newFills };
-                            setMagicFillSummary(prev => prev + ` + AI added ${Object.keys(newFills).length} more`);
-                        }
+                        setMagicFillSummary(response.data.summary || `Filled ${Object.keys(filled).length} fields`);
                     }
-                }).catch(e => {
-                    console.warn('⚠️ AI enhancement failed:', e.message);
-                }).finally(() => {
-                    setAiEnhancing(false);
-                });
-            } else if (initialFilledData?.success && initialFilledData?.filled) {
-                // Use pre-calculated data if available
-                console.log('✨ Using pre-calculated Magic Fill data');
-                const filled = initialFilledData.filled;
-                const newFills = {};
-                for (const [key, value] of Object.entries(filled)) {
-                    if (!formDataRef.current[key]) {
-                        newFills[key] = value;
-                    }
+                } catch (e) {
+                    console.error('❌ Magic Fill failed:', e);
+                } finally {
+                    // setMagicFillLoading(false); // This would have been called here
                 }
-                if (Object.keys(newFills).length > 0) {
-                    setAutoFilledFields(prev => ({ ...prev, ...newFills }));
-                    setFormData(prev => ({ ...prev, ...newFills }));
-                    formDataRef.current = { ...formDataRef.current, ...newFills };
+            } else {
+                // setMagicFillLoading(false); // This would have been called here
+            }
+            /* End of Magic Fill block. */
+
+            // Ensure magicFillLoading is set to false regardless, so the UI proceeds.
+            setMagicFillLoading(false);
+
+            // -- 2. Start Conversation Session (After Magic Fill) --
+            if (!sessionId) {
+                try {
+                    console.log('💬 Starting Conversation Session...');
+                    // Pass the FULLY FILLED data to the agent so it doesn't ask redundant questions
+                    // And pass clientType='web' to ensure single-field questions
+                    const sessionRes = await startConversationSession(formSchema, window.location.href, currentData, 'web');
+                    console.log('💬 Session Started:', sessionRes);
+                    setSessionId(sessionRes.session_id);
+
+                    // Smart Grouping: Initialize current batch from backend
+                    if (sessionRes.next_questions?.length > 0) {
+                        console.log('🎯 Initial Batch:', sessionRes.next_questions.map(f => f.name));
+                        setCurrentBatch(sessionRes.next_questions);
+                        // Initialize batch status
+                        const initialStatus = {};
+                        sessionRes.next_questions.forEach(f => {
+                            initialStatus[f.name] = formDataRef.current[f.name] ? 'filled' : 'pending';
+                        });
+                        setBatchStatus(initialStatus);
+                    }
+
+                    if (sessionRes.greeting) {
+                        // FIX: Cancel any playing prompt audio before agent speaks
+                        if (audioRef.current) {
+                            audioRef.current.pause();
+                            audioRef.current = null;
+                        }
+                        clearTimeout(idleTimeoutRef.current);
+
+                        window.speechSynthesis.cancel();
+                        const utter = new SpeechSynthesisUtterance(sessionRes.greeting);
+                        window.speechSynthesis.speak(utter);
+                        setAiResponse(sessionRes.greeting);
+                    }
+                } catch (e) {
+                    console.error('❌ Failed to start conversation session:', e);
                 }
             }
         };
 
-        if (!sessionId && userProfile !== null) {
+        if (!sessionId) {
             init();
         }
-    }, [formSchema, userProfile, sessionId]);
+    }, [formSchema, userProfile]);
 
     // Fallback: Simple profile mapping (runs if Magic Fill doesn't cover everything)
     useEffect(() => {
@@ -295,14 +280,8 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
             const field = allFields[currentFieldIndex];
             const preFilledValue = formDataRef.current[field.name] || autoFilledFields[field.name];
 
-
-            let safeValue = preFilledValue || '';
-            if (typeof preFilledValue === 'object' && preFilledValue !== null) {
-                safeValue = preFilledValue.name || preFilledValue.file_name || '';
-            }
-
-            setTranscript(safeValue);
-            setTextInputValue(safeValue);
+            setTranscript(preFilledValue || '');
+            setTextInputValue(preFilledValue || '');
             setShowTextInput(false);
 
             // FIX: Only play backend audio prompt when NO conversation session exists
@@ -837,6 +816,100 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                     )}
                 </AnimatePresence>
 
+                {/* 🧠 Smart Suggestions Modal (Profile-Based) */}
+                {/* 🧠 Smart Suggestions Modal (Profile-Based) */}
+<AnimatePresence>
+    {showSmartSuggestions && smartSuggestions.length > 0 && (
+        <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            transition={{ type: "spring", damping: 25, stiffness: 300 }}
+            className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-50 w-[500px] max-w-[90%]"
+        >
+            <div className="bg-black/60 backdrop-blur-xl rounded-2xl border border-emerald-500/20 shadow-2xl overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-500/10 bg-emerald-500/5">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <Brain size={18} className="text-emerald-400" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-semibold text-white flex items-center gap-2">
+                                Need help with this field?
+                                {suggestionTier && (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-bold border
+                                        ${suggestionTier === 'profile_based'
+                                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                            : suggestionTier === 'profile_blended'
+                                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                                : 'bg-white/10 text-white/50 border-white/10'
+                                        }`}>
+                                        {suggestionTier === 'profile_based' ? '🧠 Personalized' :
+                                            suggestionTier === 'profile_blended' ? '🎯 Smart' : '⚡ Quick'}
+                                    </span>
+                                )}
+                            </div>
+                            <p className="text-xs text-emerald-400/50 mt-0.5">Based on your behavioral profile</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => setShowSmartSuggestions(false)}
+                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white transition-colors"
+                    >
+                        <X size={14} />
+                    </button>
+                </div>
+
+                {/* Suggestions List */}
+                <div className="p-3 space-y-2 max-h-[250px] overflow-y-auto custom-scrollbar">
+                    {smartSuggestions.map((suggestion, idx) => (
+                        <motion.button
+                            key={idx}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: idx * 0.1 }}
+                            onClick={() => handleSmartSuggestionSelect(suggestion)}
+                            className="w-full text-left p-3 rounded-xl bg-white/[0.03] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/30 transition-all group"
+                        >
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1">
+                                    <div className="font-medium text-white group-hover:text-emerald-300 transition-colors">
+                                        {suggestion.value}
+                                    </div>
+                                    {suggestion.reasoning && (
+                                        <p className="text-xs text-white/40 mt-1 line-clamp-2">
+                                            {suggestion.reasoning}
+                                        </p>
+                                    )}
+                                    {/* {suggestion.behavioral_match && (
+                                        <div className="flex items-center gap-1 mt-2">
+                                            <Lightbulb size={10} className="text-emerald-400/60" />
+                                            <span className="text-[10px] text-emerald-400/60 italic">
+                                                {suggestion.behavioral_match}
+                                            </span>
+                                        </div>
+                                    )} */}
+                                </div>
+                                {/* <div className="text-[10px] font-bold font-mono text-emerald-400/70 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full whitespace-nowrap">
+                                    {Math.round(suggestion.confidence * 100)}%
+                                </div> */}
+                            </div>
+                        </motion.button>
+                    ))}
+                </div>
+
+                {/* Footer */}
+                <div className="px-4 py-2 border-t border-emerald-500/10 bg-emerald-500/[0.03]">
+                    <p className="text-[10px] text-emerald-400/30 text-center font-mono">
+                        Suggestions improve as you complete more forms • Press any key to dismiss
+                    </p>
+                </div>
+            </div>
+        </motion.div>
+    )}
+</AnimatePresence>
+
                 {/* 2. Main Content Area */}
                 <div className="flex-1 flex overflow-hidden">
 
@@ -977,28 +1050,6 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                         })}
                                     </div>
                                 </div>
-
-                            ) : (currentField.type === 'file' || currentField.type === 'attachment') ? (
-                                /* CASE A.5: ATTACHMENT FIELD */
-                                <div className="w-full flex flex-col justify-center items-center h-full max-w-md mx-auto">
-                                    <AttachmentField
-                                        label={currentField.label || currentField.name}
-                                        value={formData[currentField.name]}
-                                        onChange={(fileData) => {
-                                            updateField(currentField, fileData);
-                                            // Optional: auto-advance if file is uploaded
-                                            if (fileData) {
-                                                setTimeout(() => handleNext(currentFieldIndex), 800);
-                                            }
-                                        }}
-                                        required={currentField.required}
-                                        accept={currentField.accept}
-                                        error={null} // Pass error state if available
-                                    />
-                                    <p className="mt-6 text-white/40 text-sm text-center">
-                                        {formData[currentField.name] ? "File attached. Say 'Next' to continue." : "Upload a file or say 'Skip' if optional."}
-                                    </p>
-                                </div>
                             ) : (
                                 (!singleFieldMode && currentBatch.length > 1 && isCurrentFieldInBatch) ? (
                                     /* CASE B: GROUP VIEW */
@@ -1039,9 +1090,7 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                                                 {isFilled && <CheckCircle size={14} className="text-emerald-400" />}
                                                             </div>
                                                             <div className="text-lg font-medium text-white truncate">
-                                                                {val ? (
-                                                                    typeof val === 'object' ? (val.name || val.file_name || "File attached") : val
-                                                                ) : <span className="text-white/20 italic">Waiting...</span>}
+                                                                {val || <span className="text-white/20 italic">Waiting...</span>}
                                                             </div>
                                                         </div>
                                                     );
@@ -1141,85 +1190,27 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                                     </AnimatePresence>
                                                 </div>
 
-                                                {/* INTEGRATED SMART SUGGESTIONS (Replaces basic chips when active) */}
-                                                <AnimatePresence mode='wait'>
-                                                    {showSmartSuggestions && smartSuggestions.length > 0 && !showTextInput ? (
-                                                        <motion.div
-                                                            initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                                                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                                                            exit={{ opacity: 0, scale: 0.98 }}
-                                                            className="w-full mt-6 bg-emerald-900/20 backdrop-blur-md border border-emerald-500/20 rounded-2xl overflow-hidden shadow-lg"
-                                                        >
-                                                            {/* Integrated Header */}
-                                                            <div className="px-4 py-2 bg-emerald-500/10 border-b border-emerald-500/10 flex items-center justify-between">
-                                                                <div className="flex items-center gap-2">
-                                                                    <Sparkles size={14} className="text-emerald-400 animate-pulse" />
-                                                                    <span className="text-xs font-bold text-emerald-100 tracking-wide uppercase">
-                                                                        AI Suggestion
-                                                                    </span>
-                                                                </div>
-                                                                {suggestionTier === 'profile_based' && (
-                                                                    <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                                                                        PERSONALIZED
-                                                                    </span>
-                                                                )}
-                                                            </div>
-
-                                                            {/* Suggestions List */}
-                                                            <div className="p-2 space-y-1">
-                                                                {smartSuggestions.map((suggestion, idx) => (
-                                                                    <button
-                                                                        key={idx}
-                                                                        onClick={() => {
-                                                                            setTranscript(suggestion.value);
-                                                                            handleSmartSuggestionSelect(suggestion);
-                                                                        }}
-                                                                        className="w-full text-left p-3 rounded-xl hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20 transition-all group flex items-start gap-3"
-                                                                    >
-                                                                        <div className="mt-0.5 w-4 h-4 rounded-full border border-emerald-500/30 flex items-center justify-center bg-emerald-500/5 group-hover:bg-emerald-500/20">
-                                                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 opacity-50 group-hover:opacity-100" />
-                                                                        </div>
-                                                                        <div className="flex-1">
-                                                                            <div className="text-sm font-medium text-emerald-50 group-hover:text-white">
-                                                                                {suggestion.value}
-                                                                            </div>
-                                                                            {suggestion.reasoning && (
-                                                                                <div className="text-[10px] text-emerald-200/50 mt-0.5 leading-tight">
-                                                                                    {suggestion.reasoning}
-                                                                                </div>
-                                                                            )}
-                                                                        </div>
-                                                                        <div className="text-[10px] font-mono text-emerald-500/50">
-                                                                            {Math.round(suggestion.confidence * 100)}%
-                                                                        </div>
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        </motion.div>
-                                                    ) : (
-                                                        /* Fallback: Standard Suggestion chips */
-                                                        !showTextInput && suggestions.length > 0 && (
-                                                            <div className="w-full mt-4 px-4">
-                                                                <div className="text-xs font-mono text-white/30 uppercase tracking-widest mb-2 text-center">Suggestions from history</div>
-                                                                <div className="flex flex-wrap gap-2 justify-center">
-                                                                    {suggestions.map((suggestion, idx) => (
-                                                                        <button
-                                                                            key={idx}
-                                                                            onClick={() => {
-                                                                                setTranscript(suggestion);
-                                                                                processVoiceInput(suggestion, currentFieldIndex, false);
-                                                                            }}
-                                                                            className="px-4 py-2 bg-white/5 hover:bg-emerald-500/20 border border-white/10 hover:border-emerald-500/30 rounded-xl text-sm text-white/70 hover:text-white transition-all backdrop-blur-sm flex items-center gap-2"
-                                                                        >
-                                                                            <Sparkles size={12} className="text-emerald-400" />
-                                                                            {suggestion}
-                                                                        </button>
-                                                                    ))}
-                                                                </div>
-                                                            </div>
-                                                        )
-                                                    )}
-                                                </AnimatePresence>
+                                                {/* Suggestion chips for Voice Mode */}
+                                                {!showTextInput && suggestions.length > 0 && (
+                                                    <div className="w-full mt-4 px-4">
+                                                        <div className="text-xs font-mono text-white/30 uppercase tracking-widest mb-2 text-center">Suggestions from history</div>
+                                                        <div className="flex flex-wrap gap-2 justify-center">
+                                                            {suggestions.map((suggestion, idx) => (
+                                                                <button
+                                                                    key={idx}
+                                                                    onClick={() => {
+                                                                        setTranscript(suggestion);
+                                                                        processVoiceInput(suggestion, currentFieldIndex, false);
+                                                                    }}
+                                                                    className="px-4 py-2 bg-white/5 hover:bg-emerald-500/20 border border-white/10 hover:border-emerald-500/30 rounded-xl text-sm text-white/70 hover:text-white transition-all backdrop-blur-sm flex items-center gap-2"
+                                                                >
+                                                                    <Sparkles size={12} className="text-emerald-400" />
+                                                                    {suggestion}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 
@@ -1341,29 +1332,28 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                 </div>
 
                 {/* Toast */}
-                <AnimatePresence>
-                    {lastFilled && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 50, x: '-50%' }}
-                            animate={{ opacity: 1, y: 0, x: '-50%' }}
-                            exit={{ opacity: 0 }}
-                            className="absolute bottom-24 left-1/2 px-6 py-3 bg-black/60 border border-emerald-500/30 rounded-full shadow-2xl flex items-center gap-3 z-50 pointer-events-none backdrop-blur-xl"
-                        >
-                            <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                                <CheckCircle size={12} className="text-emerald-500" />
-                            </div>
-                            <span className="text-white/80 font-mono text-sm">
-                                Saved <span className="text-white font-bold text-shadow-sm">
-                                    {typeof lastFilled.value === 'object' && lastFilled.value !== null
-                                        ? (lastFilled.value.name || lastFilled.value.file_name || "File")
-                                        : lastFilled.value}
-                                </span>
-                            </span>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
+
+
+<AnimatePresence>
+    {lastFilled && (
+        <motion.div
+            initial={{ opacity: 0, y: 80, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 80, x: '-50%' }}
+            transition={{ type: "spring", damping: 20, stiffness: 260 }}
+            className="absolute bottom-24 left-1/2 px-6 py-3 bg-black/60 border border-emerald-500/30 rounded-full shadow-2xl flex items-center gap-3 z-40 pointer-events-none backdrop-blur-xl"
+        >
+            <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                <CheckCircle size={12} className="text-emerald-500" />
             </div>
-        </div >
+            <span className="text-white/80 font-mono text-sm">
+                Saved <span className="text-white font-bold">{lastFilled.value}</span>
+            </span>
+        </motion.div>
+    )}
+</AnimatePresence>
+            </div>
+        </div>
     );
 };
 
