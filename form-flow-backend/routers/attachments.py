@@ -178,6 +178,43 @@ async def upload_attachment(
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+@router.post("/upload-temp")
+async def upload_temp_file(file: UploadFile = File(...)):
+    """
+    Temporary file upload for form filling.
+    Saves to /tmp/formflow and returns absolute path.
+    """
+    try:
+        if not file:
+            raise HTTPException(status_code=400, detail="No file provided")
+            
+        temp_dir = "/tmp/formflow"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Use filename with uuid prefix to avoid collisions
+        temp_filename = f"{uuid.uuid4()}_{file.filename}"
+        temp_path = os.path.join(temp_dir, temp_filename)
+        
+        # Ensure path is absolute as requested
+        abs_temp_path = os.path.abspath(temp_path)
+        
+        with open(abs_temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+            
+        logger.info(f"📁 Temp file uploaded to: {abs_temp_path}")
+        
+        return {
+            "success": True,
+            "temp_path": abs_temp_path,
+            "filename": file.filename,
+            "message": "Temporary file uploaded successfully"
+        }
+    except Exception as e:
+        logger.error(f"Temp upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Temp upload failed: {str(e)}")
+
+
 @router.get("/{file_id}")
 async def get_attachment(file_id: str):
     """

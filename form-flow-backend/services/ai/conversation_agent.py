@@ -848,8 +848,8 @@ class ConversationAgent:
                 logger.info(f"Extracting from {len(fields_to_extract)} fields: {fields_to_extract[:5]}...")
                 
                 if fields_to_extract:
-                    # Use new batch extraction method
-                    batch_result = self.local_llm.extract_all_fields(user_input, fields_to_extract)
+                    # Use new batch extraction method (offloaded to thread pool)
+                    batch_result = await self.local_llm.extract_all_fields(user_input, fields_to_extract)
                     
                     if batch_result.get('extracted'):
                         new_extracted = batch_result['extracted']

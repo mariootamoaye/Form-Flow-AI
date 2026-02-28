@@ -5,7 +5,16 @@
 import axios from 'axios';
 
 // Base API configuration - uses environment variable with fallback
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
+// Base API configuration - uses environment variable with fallback to current hostname
+const getBaseUrl = () => {
+    if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    // Fallback to same hostname on port 8001 (dev assumption) or relative (prod)
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return `http://${window.location.hostname}:8001`;
+    }
+    return '/api'; // Production proxy usually
+};
+export const API_BASE_URL = getBaseUrl();
 
 // Create axios instance with default config (no global timeout)
 const api = axios.create({
@@ -34,8 +43,19 @@ api.interceptors.response.use(
     (error) => {
         // Handle common errors
         if (error.response?.status === 401) {
-            // Token expired - clear and redirect
+            // Token expired - clear all auth data and cache
             localStorage.removeItem('token');
+            localStorage.removeItem('user_email');
+
+            // Clear React Query cache to prevent stale data
+            if (typeof window !== 'undefined' && window.queryClient) {
+                try {
+                    window.queryClient.clear();
+                } catch (e) {
+                    console.warn('Failed to clear query cache:', e);
+                }
+            }
+
             window.location.href = '/login';
         }
 
@@ -102,6 +122,23 @@ export const uploadAttachment = async (file) => {
     formData.append('file', file);
 
     const response = await api.post('/attachments/upload', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    });
+    return response.data;
+};
+
+/**
+ * Upload an attachment file to temporary storage for form filling
+ * @param {File} file - File to upload
+ * @returns {Promise<{success, temp_path, filename}>}
+ */
+export const uploadTempAttachment = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await api.post('/attachments/upload-temp', formData, {
         headers: {
             'Content-Type': 'multipart/form-data',
         },
@@ -507,16 +544,6 @@ export const confirmConversationValue = async (sessionId, fieldName, confirmedVa
 
 // ============ Suggestion APIs ============
 
-/**
- * Get real-time suggestions for a form field
- * 
- * @param {string} fieldName - Field name
- * @param {string} fieldLabel - Field label (optional)
- * @param {string} fieldType - Field type (optional)
- * @param {string} currentValue - Partial value for autocomplete (optional)
- * @param {number} nResults - Max suggestions to return
- * @returns {Promise<{suggestions: string[], field_name: string}>}
- */
 export const getSuggestions = async (
     fieldName,
     fieldLabel = null,
@@ -562,7 +589,9 @@ export const getSmartSuggestions = async (
     fieldLabel = null,
     fieldType = 'text',
     formPurpose = 'General',
-    previousAnswers = {}
+    previousAnswers = {},
+    formUrl = null,
+    allFieldLabels = []
 ) => {
     try {
         const response = await api.post('/smart-suggestions', {
@@ -570,7 +599,9 @@ export const getSmartSuggestions = async (
             field_label: fieldLabel,
             field_type: fieldType,
             form_purpose: formPurpose,
-            previous_answers: previousAnswers
+            previous_answers: previousAnswers,
+            form_url: formUrl,
+            all_field_labels: allFieldLabels
         });
         return response.data;
     } catch (error) {

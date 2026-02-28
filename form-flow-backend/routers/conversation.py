@@ -33,7 +33,7 @@ class CreateSessionRequest(BaseModel):
     """Request to create a new conversation session."""
     form_schema: List[Dict[str, Any]]
     form_url: str = ""
-    initial_data: Optional[Dict[str, str]] = None
+    initial_data: Optional[Dict[str, Any]] = None
     client_type: Optional[str] = "extension"  # Defaults to 'extension' for backward compat
 
 
@@ -54,7 +54,7 @@ class MessageRequest(BaseModel):
 class MessageResponse(BaseModel):
     """Response after processing a message."""
     response: str
-    extracted_values: Dict[str, str]
+    extracted_values: Dict[str, Any]
     confidence_scores: Dict[str, float]
     needs_confirmation: List[str]
     remaining_fields_count: int
@@ -73,7 +73,7 @@ class SessionSummary(BaseModel):
     """Summary of a conversation session."""
     session_id: str
     form_url: str
-    extracted_fields: Dict[str, str]
+    extracted_fields: Dict[str, Any]
     remaining_count: int
     is_complete: bool
     conversation_turns: int

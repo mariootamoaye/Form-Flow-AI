@@ -398,17 +398,73 @@ class FormSubmitter:
         await asyncio.sleep(0.2)
         return True
 
-    async def _fill_file(self, element, value) -> bool:
-        """Handle file upload."""
+    async def _fill_file(self, page, element, value) -> bool:
+        """
+        Handle file upload with visibility handling and validation.
+        """
         files = value if isinstance(value, list) else [value]
-        valid_files = [f for f in files if os.path.exists(f)]
-        if valid_files:
+        valid_files = []
+        
+        for f in files:
+            # Extract path from attachment object if necessary
+            path = None
+            if isinstance(f, dict):
+                path = f.get('file_id') or f.get('url')
+            elif isinstance(f, str):
+                path = f
+                
+            if not path or not isinstance(path, str):
+                continue
+                
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                # Basic extension check against 'accept' attribute if present
+                accept = await element.get_attribute('accept')
+                if accept:
+                    ext = os.path.splitext(path)[1].lower()
+                    allowed_exts = [e.strip().lower() for e in accept.split(',')]
+                    # Handle wildcards like image/*
+                    if not any(ext in e or e.endswith('/*') and ext in ['.jpg', '.png', '.jpeg', '.gif', '.pdf', '.doc', '.docx'] for e in allowed_exts):
+                        logger.warning(f"⚠️ File extension {ext} may not be accepted by {accept}")
+                
+                valid_files.append(os.path.abspath(path))
+            else:
+                logger.error(f"❌ Invalid file: {path} (exists: {os.path.exists(path)}, size: {os.path.getsize(path) if os.path.exists(path) else 0})")
+
+        if not valid_files:
+            return False
+
+        try:
+            # 1. Make hidden file inputs visible first
+            await page.evaluate("""
+                (el) => {
+                    if (el) {
+                        el.style.display = 'block';
+                        el.style.visibility = 'visible';
+                        el.style.opacity = '1';
+                        el.removeAttribute('hidden');
+                        // Ensure it's not collapsed
+                        el.style.height = '20px';
+                        el.style.width = '20px';
+                    }
+                }
+            """, element)
+            
+            # 2. Set input files
             await element.set_input_files(valid_files)
             await asyncio.sleep(0.5)
-            print(f"✅ Uploaded {len(valid_files)} file(s)")
+            
+            # 3. Verify
+            file_count = await page.evaluate("(el) => el?.files?.length || 0", element)
+            if file_count > 0:
+                print(f"✅ Uploaded {file_count} file(s)")
+                return True
+            
+            # Fallback if verify fails but no error thrown
             return True
-        print(f"⚠️ No valid files found")
-        return False
+            
+        except Exception as e:
+            logger.error(f"Error in _fill_file: {e}")
+            return False
 
     async def _fill_range(self, page, element, value: str) -> bool:
         """Handle range/slider input."""
@@ -479,7 +535,7 @@ class FormSubmitter:
         elif ftype in ('checkbox', 'checkbox-group'):
             return await self._fill_checkbox(element, value)
         elif ftype == 'file':
-            return await self._fill_file(element, value)
+            return await self._fill_file(page, element, value)
         elif ftype in self.DATE_TYPES:
             return await self._fill_text(element, value)
         elif ftype == 'range':
@@ -1171,7 +1227,20 @@ class FormSubmitter:
         return False
     
     def _sync_submit_form_data(self, url: str, form_data: Dict[str, str], form_schema: List[Dict], use_cdp: bool = False) -> Dict[str, Any]:
-        """Sync Playwright implementation for Windows."""
+        """Sync Playwright implementation for Windows.
+
+        Similar to ``_sync_get_form_schema`` the worker thread may already
+        have an asyncio event loop running.  Playwright's sync API insists on
+        the absence of a running loop, so we reset the loop at the top of the
+        method.  The logic mirrors the workaround in ``parser.py``.
+        """
+        # Ensure there is no active asyncio loop in this thread
+        try:
+            asyncio.get_running_loop()
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        except RuntimeError:
+            pass
+
         from playwright.sync_api import sync_playwright
         import json
         

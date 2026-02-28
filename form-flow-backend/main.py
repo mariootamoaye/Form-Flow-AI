@@ -18,9 +18,13 @@ Run:
 """
 
 
-import warnings
 import sys
+import os
+import warnings
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import time
+import shutil
 
 # Fix for Playwright on Windows - ProactorEventLoop required for subprocess
 if sys.platform == 'win32':
@@ -59,12 +63,42 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan context manager.
     
-    Handles startup and shutdown events:
-        - Startup: Initialize database tables
+    Handlers startup and shutdown events:
+        - Startup: Initialize database tables, setup thread pool, and start cleanup tasks
         - Shutdown: Cleanup resources
     """
     # Startup
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    
+    # Initialize ThreadPoolExecutor for background AI inference (max 2 workers)
+    app.state.thread_pool = ThreadPoolExecutor(max_workers=2)
+    logger.info("Initialized AI ThreadPoolExecutor (max_workers=2)")
+
+    # Start periodic cleanup of temp files
+    async def cleanup_temp_files():
+        temp_dir = "/tmp/formflow"
+        if not os.path.exists(temp_dir):
+            return
+            
+        while True:
+            try:
+                now = time.time()
+                for filename in os.listdir(temp_dir):
+                    filepath = os.path.join(temp_dir, filename)
+                    # Delete if older than 1 hour
+                    if os.path.getmtime(filepath) < now - 3600:
+                        if os.path.isfile(filepath):
+                            os.remove(filepath)
+                        elif os.path.isdir(filepath):
+                            shutil.rmtree(filepath)
+                logger.debug("Cleaned up old temp files")
+            except Exception as e:
+                logger.error(f"Temp file cleanup failed: {e}")
+            
+            await asyncio.sleep(1800)  # Run every 30 minutes
+
+    asyncio.create_task(cleanup_temp_files())
+    logger.info("Started periodic temp file cleanup task")
     logger.info(f"Debug mode: {settings.DEBUG}")
     
     # Create database tables
@@ -95,6 +129,11 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down application")
+    
+    # Shutdown thread pool
+    if hasattr(app.state, 'thread_pool'):
+        app.state.thread_pool.shutdown(wait=True)
+        logger.info("AI ThreadPoolExecutor shut down")
     
     # Close browser pool to prevent zombie processes
     from services.form.browser_pool import close_browser_pool

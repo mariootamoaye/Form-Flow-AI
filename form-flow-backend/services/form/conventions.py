@@ -12,24 +12,29 @@ import re
 
 # === Reusable Formatters ===
 
-def strip_whitespace(value: str) -> str:
+def strip_whitespace(value: Any) -> Any:
     """Remove leading/trailing whitespace"""
-    return value.strip()
+    if isinstance(value, str):
+        return value.strip()
+    return value
 
 
-def normalize_email(value: str) -> str:
+def normalize_email(value: Any) -> Any:
     """
     Convert voice email to proper format using centralized smart normalizer.
-    
-    This prevents corruption of names like "Atharva" → "@harva".
-    See services/ai/normalizers.py for the implementation.
     """
+    if not isinstance(value, str):
+        return value
+        
     from services.ai.normalizers import normalize_email_smart
     return normalize_email_smart(value)
 
 
-def strengthen_password(value: str) -> str:
+def strengthen_password(value: Any) -> Any:
     """Add missing special characters and uppercase to password"""
+    if not isinstance(value, str):
+        return value
+        
     # Add special character if missing
     if not re.search(r'[!@#$%^&*(),.?":{}|<>]', value):
         if ' ' in value:
@@ -44,28 +49,38 @@ def strengthen_password(value: str) -> str:
     return value
 
 
-def title_case(value: str) -> str:
+def title_case(value: Any) -> Any:
     """Convert to title case"""
-    return value.strip().title()
+    if isinstance(value, str):
+        return value.strip().title()
+    return value
 
 
-def lowercase(value: str) -> str:
+def lowercase(value: Any) -> Any:
     """Convert to lowercase"""
-    return value.strip().lower()
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
 
 
 # === Reusable Validators ===
 
-def validate_email_format(value: str) -> Tuple[bool, str]:
+def validate_email_format(value: Any) -> Tuple[bool, str]:
     """Check if email has valid format"""
+    if not isinstance(value, str):
+        return True, ""  # Skip validation for non-strings (e.g. attachments)
+        
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     if re.match(pattern, value):
         return True, ""
     return False, "Invalid email format (must be like user@domain.com)"
 
 
-def validate_password_strength(value: str) -> Tuple[bool, str]:
+def validate_password_strength(value: Any) -> Tuple[bool, str]:
     """Check password meets common requirements"""
+    if not isinstance(value, str):
+        return True, ""
+        
     errors = []
     
     if len(value) < 8:
@@ -82,7 +97,9 @@ def validate_password_strength(value: str) -> Tuple[bool, str]:
 
 def create_pattern_validator(pattern: str) -> Callable:
     """Create a validator from a regex pattern"""
-    def validator(value: str) -> Tuple[bool, str]:
+    def validator(value: Any) -> Tuple[bool, str]:
+        if not isinstance(value, str):
+            return True, ""
         if re.match(pattern, value):
             return True, ""
         return False, f"Value must match pattern: {pattern}"
@@ -91,7 +108,10 @@ def create_pattern_validator(pattern: str) -> Callable:
 
 def create_length_validator(min_len: int = None, max_len: int = None) -> Callable:
     """Create a length validator"""
-    def validator(value: str) -> Tuple[bool, str]:
+    def validator(value: Any) -> Tuple[bool, str]:
+        if not isinstance(value, (str, list, dict)):
+            return True, ""
+            
         # Skip invalid values (e.g., -1 from scraper)
         if min_len and min_len > 0 and len(value) < min_len:
             return False, f"Must be at least {min_len} characters"
@@ -153,7 +173,7 @@ class FieldConvention:
     formatters: List[Callable] = field(default_factory=list)
     constraints: Dict[str, Any] = field(default_factory=dict)
     
-    def validate(self, value: str) -> Tuple[bool, str]:
+    def validate(self, value: Any) -> Tuple[bool, str]:
         """Validate value against field conventions"""
         if self.required and not value:
             return False, f"{self.name} is required"
@@ -166,7 +186,7 @@ class FieldConvention:
         
         return True, ""
     
-    def format(self, value: str) -> str:
+    def format(self, value: Any) -> Any:
         """Apply formatting rules to value"""
         if self.formatters:
             for formatter in self.formatters:
@@ -181,7 +201,7 @@ class FormSchema:
         self.form_id = form_id
         self.fields = {f.name: f for f in fields}
     
-    def validate_all(self, data: Dict[str, str]) -> Tuple[bool, List[str]]:
+    def validate_all(self, data: Dict[str, Any]) -> Tuple[bool, List[str]]:
         """Validate only fields present in user data"""
         errors = []
         
@@ -194,7 +214,7 @@ class FormSchema:
         
         return len(errors) == 0, errors
     
-    def format_all(self, data: Dict[str, str]) -> Dict[str, str]:
+    def format_all(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Format all fields according to conventions and sync dependencies"""
         formatted = {}
         

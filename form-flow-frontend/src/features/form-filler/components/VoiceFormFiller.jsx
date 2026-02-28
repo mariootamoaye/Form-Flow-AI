@@ -138,7 +138,55 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
         load();
     }, []);
 
-    // 🪄 INSTANT FILL + BACKGROUND AI ENHANCEMENT
+    // WebSocket for real-time Magic Fill updates
+    useEffect(() => {
+        if (!userProfile) return;
+
+        const userId = userProfile.id || 'anonymous';
+        const wsUrl = `${API_BASE_URL.replace('http', 'ws')}/ws/${userId}`;
+        console.log('📡 Connecting to WebSocket for progress...', wsUrl);
+
+        let socket;
+        try {
+            socket = new WebSocket(wsUrl);
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'field_filled' && data.field_id && data.value) {
+                        console.log(`✨ Real-time filled: ${data.field_id} = ${data.value} (via ${data.source})`);
+
+                        // Update state if not already filled
+                        if (!formDataRef.current[data.field_id]) {
+                            const field = allFields.find(f => f.name === data.field_id);
+                            if (field) {
+                                updateField(field, data.value);
+                                setAutoFilledFields(prev => ({ ...prev, [data.field_id]: data.value }));
+                            } else {
+                                // Fallback if not in allFields (e.g. hidden or extra)
+                                setFormData(prev => ({ ...prev, [data.field_id]: data.value }));
+                                formDataRef.current = { ...formDataRef.current, [data.field_id]: data.value };
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('WS parse error:', e);
+                }
+            };
+
+            socket.onclose = () => console.log('📡 WebSocket closed');
+            socket.onerror = (err) => console.warn('📡 WebSocket error:', err);
+        } catch (e) {
+            console.error('WS connection failed:', e);
+        }
+
+        return () => {
+            if (socket) socket.close();
+        };
+    }, [userProfile, allFields]);
+
+    // 🪄 MAGIC FILL & CONVERSATION START (Commented out per user request)
+    /*
     useEffect(() => {
         const init = async () => {
             if (!formSchema?.length) return;
@@ -205,10 +253,11 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                 setAiEnhancing(true);
                 console.log('🤖 Starting background AI enhancement...');
 
-                // Fire and forget - don't await
+                // Fire and forget - results will come back via WS or this promise
                 api.post('/magic-fill', {
                     form_schema: formSchema,
-                    user_profile: userProfile
+                    user_profile: userProfile,
+                    form_url: formUrl || window.location.href
                 }).then(response => {
                     if (response.data?.success && response.data.filled) {
                         const filled = response.data.filled;
@@ -256,6 +305,7 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
             init();
         }
     }, [formSchema, userProfile, sessionId]);
+    */
 
     // Fallback: Simple profile mapping (runs if Magic Fill doesn't cover everything)
     useEffect(() => {
@@ -295,8 +345,8 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
             const field = allFields[currentFieldIndex];
             const preFilledValue = formDataRef.current[field.name] || autoFilledFields[field.name];
 
-            setTranscript(preFilledValue || '');
-            setTextInputValue(preFilledValue || '');
+            setTranscript(typeof preFilledValue === 'object' && preFilledValue !== null ? (preFilledValue?.name || '') : (preFilledValue || ''));
+            setTextInputValue(typeof preFilledValue === 'object' && preFilledValue !== null ? (preFilledValue?.name || '') : (preFilledValue || ''));
             setShowTextInput(false);
 
             // FIX: Only play backend audio prompt when NO conversation session exists
@@ -619,8 +669,8 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                 inferFieldType(field),
                 formContext?.purpose || 'Form filling',
                 formDataRef.current,  // Pass already answered fields
-                formUrl,
-                all_field_labels
+                window.location.href, // ← ADD
+                all_field_labels      // ← ADD
             );
 
             if (result.suggestions && result.suggestions.length > 0 && result.tier_used !== 'error') {
@@ -841,34 +891,35 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                             transition={{ type: "spring", damping: 25, stiffness: 300 }}
                             className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-50 w-[500px] max-w-[90%]"
                         >
-                            <div className="bg-gradient-to-br from-purple-900/80 to-indigo-900/80 backdrop-blur-xl rounded-2xl border border-purple-500/30 shadow-2xl overflow-hidden">
+                            <div className="bg-black/60 backdrop-blur-xl rounded-2xl border border-emerald-500/20 shadow-2xl overflow-hidden">
                                 {/* Header */}
-                                <div className="flex items-center justify-between px-5 py-3 border-b border-purple-500/20 bg-purple-500/10">
+                                <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-500/10 bg-emerald-500/5">
                                     <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-purple-500/20">
-                                            <Brain size={18} className="text-purple-300" />
+                                        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                                            <Brain size={18} className="text-emerald-400" />
                                         </div>
                                         <div>
                                             <div className="text-sm font-semibold text-white flex items-center gap-2">
                                                 Need help with this field?
                                                 {suggestionTier && (
-                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wider ${suggestionTier === 'profile_based'
-                                                        ? 'bg-purple-500/30 text-purple-200'
-                                                        : suggestionTier === 'profile_blended'
-                                                            ? 'bg-blue-500/30 text-blue-200'
-                                                            : 'bg-gray-500/30 text-gray-200'
+                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-bold border
+                                        ${suggestionTier === 'profile_based'
+                                                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                                            : suggestionTier === 'profile_blended'
+                                                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                                                : 'bg-white/10 text-white/50 border-white/10'
                                                         }`}>
                                                         {suggestionTier === 'profile_based' ? '🧠 Personalized' :
                                                             suggestionTier === 'profile_blended' ? '🎯 Smart' : '⚡ Quick'}
                                                     </span>
                                                 )}
                                             </div>
-                                            <p className="text-xs text-purple-200/70">Based on your behavioral profile</p>
+                                            <p className="text-xs text-emerald-400/50 mt-0.5">Based on your behavioral profile</p>
                                         </div>
                                     </div>
                                     <button
                                         onClick={() => setShowSmartSuggestions(false)}
-                                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white transition-colors"
                                     >
                                         <X size={14} />
                                     </button>
@@ -883,29 +934,18 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                             animate={{ opacity: 1, x: 0 }}
                                             transition={{ delay: idx * 0.1 }}
                                             onClick={() => handleSmartSuggestionSelect(suggestion)}
-                                            className="w-full text-left p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 hover:border-purple-500/30 transition-all group"
+                                            className="w-full text-left p-3 rounded-xl bg-white/[0.03] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/30 transition-all group"
                                         >
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="flex-1">
-                                                    <div className="font-medium text-white group-hover:text-purple-200 transition-colors">
+                                                    <div className="font-medium text-white group-hover:text-emerald-300 transition-colors">
                                                         {suggestion.value}
                                                     </div>
                                                     {suggestion.reasoning && (
-                                                        <p className="text-xs text-white/50 mt-1 line-clamp-2">
+                                                        <p className="text-xs text-white/40 mt-1 line-clamp-2">
                                                             {suggestion.reasoning}
                                                         </p>
                                                     )}
-                                                    {suggestion.behavioral_match && (
-                                                        <div className="flex items-center gap-1 mt-2">
-                                                            <Lightbulb size={10} className="text-amber-400/70" />
-                                                            <span className="text-[10px] text-amber-400/70 italic">
-                                                                {suggestion.behavioral_match}
-                                                            </span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="text-[10px] text-purple-300/60 bg-purple-500/10 px-2 py-1 rounded-full whitespace-nowrap">
-                                                    {Math.round(suggestion.confidence * 100)}%
                                                 </div>
                                             </div>
                                         </motion.button>
@@ -913,8 +953,8 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                 </div>
 
                                 {/* Footer */}
-                                <div className="px-4 py-2 border-t border-purple-500/20 bg-purple-500/5">
-                                    <p className="text-[10px] text-purple-300/50 text-center">
+                                <div className="px-4 py-2 border-t border-emerald-500/10 bg-emerald-500/[0.03]">
+                                    <p className="text-[10px] text-emerald-400/30 text-center font-mono">
                                         Suggestions improve as you complete more forms • Press any key to dismiss
                                     </p>
                                 </div>
@@ -922,6 +962,8 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                         </motion.div>
                     )}
                 </AnimatePresence>
+
+
 
                 {/* 2. Main Content Area */}
                 <div className="flex-1 flex overflow-hidden">
@@ -963,7 +1005,11 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                         <Sparkles size={14} className="text-emerald-400" />
                                         <span className="text-xs font-mono text-emerald-400 uppercase tracking-wider">Suggested Answer</span>
                                     </div>
-                                    <p className="text-white font-medium text-lg">{autoFilledFields[currentField.name]}</p>
+                                    <p className="text-white font-medium text-lg">
+                                        {(typeof autoFilledFields[currentField.name] === 'object' && autoFilledFields[currentField.name] !== null)
+                                            ? autoFilledFields[currentField.name].name
+                                            : autoFilledFields[currentField.name]}
+                                    </p>
                                 </motion.div>
                             )}
 
@@ -1125,7 +1171,7 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                                                 {isFilled && <CheckCircle size={14} className="text-emerald-400" />}
                                                             </div>
                                                             <div className="text-lg font-medium text-white truncate">
-                                                                {val || <span className="text-white/20 italic">Waiting...</span>}
+                                                                {val ? ((typeof val === 'object' && val !== null) ? val.name : val) : <span className="text-white/20 italic">Waiting...</span>}
                                                             </div>
                                                         </div>
                                                     );
@@ -1379,7 +1425,9 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                 <CheckCircle size={12} className="text-emerald-500" />
                             </div>
                             <span className="text-white/80 font-mono text-sm">
-                                Saved <span className="text-white font-bold text-shadow-sm">{lastFilled.value}</span>
+                                Saved <span className="text-white font-bold text-shadow-sm">
+                                    {(typeof lastFilled.value === 'object' && lastFilled.value !== null) ? lastFilled.value.name : (lastFilled.value || '')}
+                                </span>
                             </span>
                         </motion.div>
                     )}

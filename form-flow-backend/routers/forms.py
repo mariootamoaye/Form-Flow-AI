@@ -1,9 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, List, Any
+from sqlalchemy.future import select
+from core import database, models
+import auth
+from config.settings import settings
+from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 import asyncio
 import json
+import hashlib
 
 from services.form.parser import get_form_schema, create_template
 from core.dependencies import (
@@ -16,11 +21,12 @@ from services.form.submitter import FormSubmitter
 from services.ai.gemini import GeminiService, SmartFormFillerChain
 from services.form.conventions import get_form_schema as get_schema
 from services.ai.smart_autofill import get_smart_autofill
-from core import database, models
-import auth
-from config.settings import settings
-from sqlalchemy.future import select
 from services.ai.profile.service import generate_profile_background
+from utils.cache import get_cached, set_cached
+from utils.ws import emit_field_filled
+from routers.websocket import manager
+from utils.cache import get_cached, set_cached
+import hashlib
 
 # --- Pydantic Models ---
 class ScrapeRequest(BaseModel):
@@ -33,16 +39,16 @@ class VoiceProcessRequest(BaseModel):
 
 class FormFillRequest(BaseModel):
     url: str
-    form_data: Dict[str, str]
+    form_data: Dict[str, Any]
 
 class FormSubmitRequest(BaseModel):
     url: str
-    form_data: Dict[str, str]
+    form_data: Dict[str, Any]
     form_schema: List[Dict[str, Any]]
     use_cdp: bool = False  # If True, connect to user's browser via Chrome DevTools Protocol
 
 class ConversationalFlowRequest(BaseModel):
-    extracted_fields: Dict[str, str]
+    extracted_fields: Dict[str, Any]
     form_schema: List[Dict[str, Any]]
 
 class ComprehensiveFormRequest(BaseModel):
@@ -52,6 +58,8 @@ class ComprehensiveFormRequest(BaseModel):
 class MagicFillRequest(BaseModel):
     form_schema: List[Dict[str, Any]]
     user_profile: Dict[str, Any] = {}  # Optional extra profile data
+    form_url: Optional[str] = None
+    form_url: str = "" # Required for caching
 
 router = APIRouter(tags=["Forms & Automation"])
 
@@ -273,7 +281,7 @@ async def process_voice(
     """Process voice input with LLM enhancement and smart formatting."""
     try:
         # Process with LLM
-        result = voice_processor.process_voice_input(
+        result = await voice_processor.process_voice_input(
             data.transcript, 
             data.field_info, 
             data.form_context
@@ -399,22 +407,24 @@ async def fill_form(data: FormFillRequest):
 async def magic_fill(
     data: MagicFillRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(database.get_db),
     gemini_service: GeminiService = Depends(get_gemini_service)
 ):
     """
-    🪄 Magic Fill - Intelligently pre-fill entire form from user profile.
-    
-    Uses LangChain + Gemini to map user data to form fields.
+    Magic Fill - Intelligently pre-fill entire form from user profile.
+    Order: instant fill -> parallel AI -> stream progress via WebSocket.
     """
     try:
-        # 1. Get user profile from database if authenticated
-        user_profile = dict(data.user_profile)  # Start with request data
-        
+        client_id = request.headers.get("X-Client-ID") or request.query_params.get("client_id")
+        cache_user_id = "anonymous"
+        user_profile = dict(data.user_profile)
+
+        # Merge DB profile + history when authenticated
         auth_header = request.headers.get('Authorization')
         if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
             try:
+                token = auth_header.split(' ')[1]
                 payload = auth.decode_access_token(token)
                 if payload:
                     email = payload.get("sub")
@@ -422,7 +432,7 @@ async def magic_fill(
                         result = await db.execute(select(models.User).filter(models.User.email == email))
                         user = result.scalars().first()
                         if user:
-                            # Merge DB profile with request profile (request takes precedence)
+                            cache_user_id = str(user.id)
                             db_profile = {
                                 "first_name": user.first_name,
                                 "last_name": user.last_name,
@@ -434,23 +444,28 @@ async def magic_fill(
                                 "fullname": f"{user.first_name} {user.last_name}".strip()
                             }
                             user_profile = {**db_profile, **user_profile}
-
-                            # 🧠 Merge with learned history (fills gaps like Company, Title, specific addresses)
                             try:
                                 history_profile = await get_smart_autofill().get_profile_from_history(str(user.id))
                                 if history_profile:
-                                    print(f"🧠 Merging {len(history_profile)} learned fields from history")
-                                    # Base = History, Overlay = Current Result (DB + Request)
-                                    # We want History to fill gaps, so History is the base.
-                                    # But wait, user_profile already has DB+Request.
-                                    # So: final = {**history_profile, **user_profile}
-                                    # This ensures DB/Request values (verified/explicit) override History.
                                     user_profile = {**history_profile, **user_profile}
                             except Exception as e:
-                                print(f"⚠️ History merge failed: {e}")
+                                print(f"Warning: history merge failed: {e}")
             except Exception as e:
-                print(f"⚠️ Auth lookup failed: {e}")
-        
+                print(f"Warning: auth lookup failed: {e}")
+
+        # Cache check (per user + form URL, TTL 24h)
+        cache_key = None
+        if data.form_url:
+            url_hash = hashlib.md5(data.form_url.encode()).hexdigest()
+            cache_key = f"magic_fill:{cache_user_id}:{url_hash}"
+            cached_result = await get_cached(cache_key)
+            if cached_result:
+                print(f"Magic Fill cache hit for {data.form_url}")
+                cached_dict = cached_result if isinstance(cached_result, dict) else json.loads(cached_result)
+                for fname, val in cached_dict.get("filled", {}).items():
+                    await emit_field_filled(fname, val, client_id)
+                return {**cached_dict, "cached": True}
+
         if not user_profile:
             return {
                 "success": False,
@@ -459,22 +474,27 @@ async def magic_fill(
                 "unfilled": [],
                 "summary": "Please sign in to use Magic Fill"
             }
-        
-        # 2. Call Smart Form Filler Chain
+
         if not gemini_service:
             raise HTTPException(status_code=500, detail="Gemini service not available")
-        
+
         filler = SmartFormFillerChain(gemini_service.llm)
+
+        async def progress_cb(field_id: str, value: Any):
+            await emit_field_filled(field_id, value, client_id)
+
         result = await filler.fill(
             user_profile=user_profile,
             form_schema=data.form_schema,
-            min_confidence=0.5
+            min_confidence=0.5,
+            progress_cb=progress_cb
         )
-        
-        print(f"✨ Magic Fill: {len(result.get('filled', {}))} fields filled")
-        
+
+        if cache_key and result.get("success"):
+            await set_cached(cache_key, result, ttl=86400)
+
         return result
-        
+
     except Exception as e:
         import traceback
         traceback.print_exc()

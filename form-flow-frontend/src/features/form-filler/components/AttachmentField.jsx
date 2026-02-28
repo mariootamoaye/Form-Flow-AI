@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, File as FileIcon, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { uploadAttachment } from '@/services/api';
+import { uploadTempAttachment as uploadAttachment } from '@/services/api';
 
 const AttachmentField = ({
     label,
@@ -55,11 +55,10 @@ const AttachmentField = ({
             if (response.success) {
                 // Return structured data for the form
                 onChange({
-                    file_id: response.file_id,
-                    url: response.url,
-                    name: response.file_name,
-                    content_type: response.content_type,
-                    size: response.size
+                    file_id: response.temp_path, // Use temp_path for backend filling
+                    url: response.temp_path,
+                    name: response.filename,
+                    size: 1024 // Placeholder size
                 });
             } else {
                 throw new Error(response.message || 'Upload failed');

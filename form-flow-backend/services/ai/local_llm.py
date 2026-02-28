@@ -14,13 +14,25 @@ Usage:
 import os
 import json
 import torch
-from typing import Dict, List, Any, Optional
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Any, Optional, Callable, TypeVar
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from utils.logging import get_logger
 from utils.exceptions import AIServiceError
 
 logger = get_logger(__name__)
+
+# Thread pool initialized once at import time (max_workers=2 as required)
+LOCAL_LLM_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+T = TypeVar("T")
+
+
+async def run_in_llm_executor(fn: Callable[[], T]) -> T:
+    """Run blocking local-LLM work in dedicated executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(LOCAL_LLM_EXECUTOR, fn)
 
 
 class LocalLLMService:
@@ -63,6 +75,8 @@ class LocalLLMService:
         self.tokenizer = None
         self._initialized = False
         self._cache = {}  # Simple in-memory cache
+        # Re-use shared executor so we never create extra worker pools
+        self.thread_pool = LOCAL_LLM_EXECUTOR
         
         # Initialize Gemini fallback if available
         self.gemini_llm = None
@@ -171,22 +185,22 @@ class LocalLLMService:
     
     def extract_field_value(self, user_input: str, field_name: str) -> Dict[str, Any]:
         """
-        Extract a single field value using the Local LLM.
-        Now uses the smart batch extraction logic for consistency.
+        Extract a single field value using the Local LLM (synchronous).
+        Use `extract_field_value_async` from async contexts.
         """
         try:
             # Re-use the robust batch extraction for a single field
-            batch_result = self.extract_all_fields(user_input, [field_name])
-            
+            batch_result = self._extract_all_fields_sync(user_input, [field_name])
+
             extracted = batch_result.get('extracted', {})
             confidence = batch_result.get('confidence', {})
-            
+
             # Check if our field was found
             # The batch extractor might return the key as the label or normalized name
             # We need to find the matching key in the result
             value = None
             conf = 0.0
-            
+
             # Direct match
             if field_name in extracted:
                 value = extracted[field_name]
@@ -198,20 +212,20 @@ class LocalLLMService:
                         value = val
                         conf = confidence.get(key, 0.0)
                         break
-            
+
             if value:
                 return {
                     "value": value,
                     "confidence": conf,
                     "source": "local_llm"
                 }
-            
+
             return {
                 "value": None,
                 "confidence": 0.0,
                 "source": "local_llm"
             }
-            
+
         except Exception as e:
             logger.error(f"Error in extract_field_value: {e}")
             return {
@@ -220,20 +234,24 @@ class LocalLLMService:
                 "source": "local_llm",
                 "error": str(e)
             }
+
+    async def extract_field_value_async(self, user_input: str, field_name: str) -> Dict[str, Any]:
+        """Async wrapper that offloads to the shared executor."""
+        return await run_in_llm_executor(lambda: self.extract_field_value(user_input, field_name))
     
 
     
-    def extract_all_fields(self, user_input: str, fields: List[Any]) -> Dict[str, Any]:
+    async def extract_all_fields(self, user_input: str, fields: List[Any]) -> Dict[str, Any]:
         """
         Extract ALL fields from a single user input using Context-Aware LLM Inference.
-        
-        Args:
-            user_input: The user's full input text
-            fields: List of field definitions (Dicts) or field names (strings)
-            
-        Returns:
-            Dict with extracted values, confidences, and source
+        Runs in a background thread to avoid blocking the event loop.
         """
+        return await run_in_llm_executor(
+            lambda: self._extract_all_fields_sync(user_input, fields)
+        )
+
+    def _extract_all_fields_sync(self, user_input: str, fields: List[Any]) -> Dict[str, Any]:
+        """Synchronous implementation of field extraction."""
         # Ensure initialization
         self._initialize()
         

@@ -158,6 +158,7 @@ const HomePage = () => {
                 initialFilledData={result.magic_fill_data}
                 onComplete={handleVoiceComplete}
                 onClose={() => setShowVoiceForm(false)}
+                formUrl={scrapedUrl}
             />
         );
     }

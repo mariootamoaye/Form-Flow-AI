@@ -25,7 +25,8 @@ Usage:
 
 import os
 import json
-from typing import Dict, List, Any, Optional
+import asyncio
+from typing import Dict, List, Any, Optional, Callable, Awaitable
 from dotenv import load_dotenv  # <--- Add this
 
 load_dotenv()
@@ -57,6 +58,12 @@ class MagicFillResult(BaseModel):
     filled_fields: List[FormFieldSuggestion] = Field(description="List of filled field suggestions")
     unfilled_fields: List[str] = Field(description="Field names that couldn't be filled")
     summary: str = Field(description="Brief summary of what was filled")
+
+
+class FieldFill(BaseModel):
+    """Single-field fill output."""
+    value: Optional[str] = ""
+    confidence: float = 0.0
 
 
 class ConversationalFlow(BaseModel):
@@ -264,12 +271,30 @@ FORM SCHEMA (fields to fill):
 
 Fill as many fields as possible from the user's profile. Be intelligent about mapping data.""")
         ])
+        # Lightweight single-field prompt for parallel inference
+        self.single_field_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You fill ONE form field using a provided user profile.
+Return strict JSON: {"value": "...", "confidence": 0-1}. If unsure, leave value empty and confidence 0."""),
+            ("human", """PROFILE:
+{profile}
+
+FIELD:
+Name: {field_name}
+Label: {field_label}
+Type: {field_type}
+Required: {required}
+Options: {options}
+
+Provide the best value for this field from the profile or inferred context.""")
+        ])
+        self.single_field_parser = JsonOutputParser(pydantic_object=FieldFill)
     
     async def fill(
         self, 
         user_profile: Dict[str, Any], 
         form_schema: List[Dict[str, Any]],
-        min_confidence: float = 0.5
+        min_confidence: float = 0.5,
+        progress_cb: Optional[Callable[[str, Any], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """
         Perform "Magic Fill" - fill entire form from user profile.
@@ -278,6 +303,7 @@ Fill as many fields as possible from the user's profile. Be intelligent about ma
             user_profile: User's profile data (name, email, resume, etc.)
             form_schema: Form schema with all fields
             min_confidence: Minimum confidence to include a suggestion
+            progress_cb: Optional async callback invoked per field filled
             
         Returns:
             dict: {
@@ -299,26 +325,55 @@ Fill as many fields as possible from the user's profile. Be intelligent about ma
                             'required': field.get('required', False),
                             'options': field.get('options', [])[:5]  # Limit options for context
                         })
-            
-            # Create and run chain
-            chain = self.prompt | self.llm | self.parser
-            
-            result = await chain.ainvoke({
-                "profile": json.dumps(user_profile, indent=2, default=str),
-                "schema": json.dumps(fillable_fields, indent=2),
-                "format_instructions": self.parser.get_format_instructions()
-            })
-            
-            # Filter by confidence
-            filled = {}
-            for suggestion in result.get('filled_fields', []):
-                if suggestion.get('confidence', 0) >= min_confidence:
-                    filled[suggestion['field_name']] = suggestion['value']
-            
-            unfilled = result.get('unfilled_fields', [])
-            
+
+            # STEP 1: Instant fill from obvious profile fields (non-blocking)
+            instant_filled = self._instant_fill_profile(user_profile, fillable_fields)
+            filled: Dict[str, Any] = {**instant_filled}
+            if progress_cb:
+                for fname, val in instant_filled.items():
+                    await progress_cb(fname, val)
+
+            remaining_fields = [f for f in fillable_fields if f.get("name") not in filled]
+
+            # STEP 2: Fire AI calls in parallel for remaining fields
+            async def infer_single(field: Dict[str, Any]):
+                try:
+                    payload = {
+                        "profile": json.dumps(user_profile, default=str),
+                        "field_name": field.get("name"),
+                        "field_label": field.get("label") or field.get("name"),
+                        "field_type": field.get("type", "text"),
+                        "required": field.get("required", False),
+                        "options": json.dumps(field.get("options", []), default=str)
+                    }
+                    chain = self.single_field_prompt | self.llm | self.single_field_parser
+                    result: FieldFill = await chain.ainvoke(payload)
+                    return field.get("name"), result.value, result.confidence
+                except Exception as e:
+                    logger.warning(f"Single-field inference failed for {field.get('name')}: {e}")
+                    return field.get("name"), None, 0.0
+
+            tasks = []
+            semaphore = asyncio.Semaphore(5)  # prevent LLM overload
+
+            async def run_with_semaphore(field):
+                async with semaphore:
+                    return await infer_single(field)
+
+            for field in remaining_fields:
+                tasks.append(asyncio.create_task(run_with_semaphore(field)))
+
+            for task in asyncio.as_completed(tasks):
+                fname, val, conf = await task
+                if val and conf >= min_confidence:
+                    filled[fname] = val
+                    if progress_cb:
+                        await progress_cb(fname, val)
+
+            unfilled = [f.get("name") for f in fillable_fields if f.get("name") not in filled]
+
             logger.info(f"Magic Fill: {len(filled)} filled, {len(unfilled)} unfilled")
-            
+
             return {
                 "success": True,
                 "filled": filled,
@@ -335,6 +390,64 @@ Fill as many fields as possible from the user's profile. Be intelligent about ma
                 "unfilled": [],
                 "summary": "Magic fill failed, please fill manually"
             }
+
+    def _instant_fill_profile(self, profile: Dict[str, Any], fields: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Fast, deterministic profile mapping for common fields.
+        Mirrors frontend instantFill utility to ensure DOM injection happens immediately.
+        """
+        if not profile:
+            return {}
+
+        profile_data = {
+            "first_name": profile.get("first_name") or profile.get("firstName") or "",
+            "last_name": profile.get("last_name") or profile.get("lastName") or "",
+            "full_name": profile.get("fullname") or profile.get("full_name") or f"{profile.get('first_name','')} {profile.get('last_name','')}".strip(),
+            "email": profile.get("email") or "",
+            "phone": profile.get("mobile") or profile.get("phone") or profile.get("contact") or "",
+            "city": profile.get("city") or "",
+            "state": profile.get("state") or "",
+            "country": profile.get("country") or "",
+            "zip": profile.get("zip") or profile.get("zipcode") or profile.get("pincode") or "",
+            "address": profile.get("address") or profile.get("street") or "",
+        }
+
+        patterns = {
+            "first_name": ["first_name", "firstname", "fname", "given_name", "givenname", "name_first"],
+            "last_name": ["last_name", "lastname", "lname", "surname", "family_name", "familyname", "name_last"],
+            "full_name": ["full_name", "fullname", "name", "your_name", "yourname", "applicant_name", "applicantname", "complete_name"],
+            "email": ["email", "e-mail", "mail", "emailaddress", "email_address", "e_mail", "emailid", "email_id", "user_email"],
+            "phone": ["phone", "mobile", "cell", "telephone", "tel", "phonenumber", "phone_number", "mobile_number", "contact_number", "cellphone", "mobilenumber", "contact"],
+            "city": ["city", "town", "municipality", "locality", "city_name"],
+            "state": ["state", "province", "region", "state_province", "stateprovince"],
+            "country": ["country", "nation", "country_name"],
+            "zip": ["zip", "zipcode", "zip_code", "postal", "postalcode", "postal_code", "pincode", "pin_code", "pin"],
+            "address": ["address", "street", "street_address", "address_line", "addressline", "address1", "address_1", "location"],
+        }
+
+        def normalize(name: str) -> str:
+            return (
+                (name or "")
+                .lower()
+                .replace("-", "_")
+                .replace(" ", "_")
+                .replace(".", "_")
+            )
+
+        filled = {}
+        for field in fields:
+            if not field.get("name") or field.get("type") in ["submit", "button", "hidden", "file", "image"]:
+                continue
+            fname = normalize(field.get("name"))
+            flabel = normalize(field.get("label") or "")
+            for key, pat_list in patterns.items():
+                norm_patterns = [normalize(p) for p in pat_list]
+                if fname in norm_patterns or flabel in norm_patterns or any(p in fname for p in norm_patterns):
+                    if profile_data.get(key):
+                        filled[field.get("name")] = profile_data[key]
+                    break
+
+        return filled
 
 
 # --- Singleton ---

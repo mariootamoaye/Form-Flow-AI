@@ -86,8 +86,8 @@ class VoiceProcessor:
             
         return base_prompt
 
-    def process_voice_input(self, transcript: str, field_info: Dict, form_context: str) -> Dict:
-        """Process voice input using Local LLM (speed) with Gemini fallback (accuracy)"""
+    async def process_voice_input(self, transcript: str, field_info: Dict, form_context: str) -> Dict:
+        """Process voice input using Local LLM (speed) with Gemini fallback (accuracy)."""
         
         # 1. Try Local LLM first (Fastest Response)
         try:
@@ -96,7 +96,7 @@ class VoiceProcessor:
             
             if local_llm:
                 field_name = field_info.get('label', field_info.get('name', 'field'))
-                local_result = local_llm.extract_field_value(transcript, field_name)
+                local_result = await local_llm.extract_field_value_async(transcript, field_name)
                 
                 # If Local LLM is confident, return immediately!
                 if local_result.get('confidence', 0) > 0.6:
@@ -223,8 +223,9 @@ class VoiceProcessor:
         """
         
         try:
-            # Use OpenRouter with Gemma 3 27B for fast inference
-            response = self.client.chat.completions.create(
+            # Use OpenRouter with Gemma 3 27B for fast inference (offloaded to thread)
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 extra_headers={
                     "HTTP-Referer": "https://formflow.ai",
                     "X-Title": "Form Flow AI Voice Processor",

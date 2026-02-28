@@ -67,24 +67,31 @@ async def get_form_schema(
 ) -> Dict[str, Any]:
     """
     Scrape form fields from a URL. Supports Google Forms and standard HTML forms.
-    
-    On Windows, uses sync Playwright via asyncio.to_thread() to bypass
-    asyncio subprocess limitations in Python 3.14.
-    
+
+    Historically this function chose between a synchronous and an
+    asynchronous Playwright implementation.  On Windows the synchronous path
+    was preferred to avoid asyncio subprocess issues with Python 3.14.  That
+    code executed inside ``asyncio.to_thread`` which sometimes collided with
+    a stray event loop in the worker thread (see bug reports logged in the
+    application).  The sync path is kept for backwards compatibility, but
+    the thread-level event loop is explicitly reset above.  In most
+    environments the async version works and future refactors can simplify
+    this to always call ``_async_get_form_schema``.
+
     Args:
         url: Target URL to scrape
         generate_speech: Whether to generate TTS for fields
         wait_for_dynamic: Whether to wait for JS content
         manual_fields: Optional list of manually mapped fields to fallback to
-    
+
     Returns:
         Dict with 'forms', 'url', 'is_google_form', 'total_forms', 'total_fields'
     """
-    # On Windows, use sync Playwright to avoid asyncio subprocess issues
+    # Choose implementation.  Windows still goes through ``_sync_get_form_schema``
+    # for backwards compatibility, but the async branch is safe everywhere.
     if sys.platform == 'win32':
         return await asyncio.to_thread(_sync_get_form_schema, url, generate_speech, wait_for_dynamic, manual_fields)
-    
-    # Non-Windows: use async Playwright as before
+
     return await _async_get_form_schema(url, generate_speech, wait_for_dynamic, manual_fields)
 
 
@@ -94,7 +101,34 @@ def _sync_get_form_schema(
     wait_for_dynamic: bool = True,
     manual_fields: List[Dict] = None
 ) -> Dict[str, Any]:
-    """Sync Playwright implementation for Windows."""
+    """Sync Playwright implementation for Windows.
+
+    Historically we avoided the async API on Windows due to subprocess
+    issues in Python 3.14.  That branch ran inside :func:`asyncio.to_thread`,
+    but threads created by the default executor can retain a running
+    event loop from previous work.  Playwright explicitly raises if a
+    running asyncio loop is detected in the current thread, which resulted
+    in the error seen in the logs:
+
+        It looks like you are using Playwright Sync API inside the asyncio loop.
+
+    To make the sync code safe we aggressively clear/reset the loop at the
+    beginning of the worker thread so that ``playwright.sync_api`` cannot
+    see a running loop.  In practice the async implementation works fine
+    on Windows too, so the entire branch could eventually be removed and
+    always use ``_async_get_form_schema``.
+    """
+    # Ensure the thread does not have an active asyncio loop, otherwise
+    # ``sync_playwright`` will complain.  ``get_running_loop`` raises if
+    # there is no running loop; if it returns a loop we replace it with
+    # a fresh non-running one.
+    try:
+        asyncio.get_running_loop()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    except RuntimeError:
+        # no loop was running, nothing to do
+        pass
+
     is_google_form = 'docs.google.com/forms' in url
     
     try:

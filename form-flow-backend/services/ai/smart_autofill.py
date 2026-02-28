@@ -176,7 +176,7 @@ class SmartAutofill:
     async def learn_from_submission(
         self,
         user_id: str,
-        form_data: Dict[str, str],
+        form_data: Dict[str, Any],
         form_id: Optional[str] = None
     ) -> None:
         """

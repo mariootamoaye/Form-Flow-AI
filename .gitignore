@@ -69,6 +69,7 @@ debug_*.png
 *.log
 temp/
 tmp/
+form-flow-backend/storage/
 
 # Testing
 .pytest_cache/
