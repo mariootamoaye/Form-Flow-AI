@@ -41,8 +41,8 @@ class PluginSessionData:
     """
     session_id: str
     plugin_id: int
-    user_id: Optional[int]
-    api_key_prefix: Optional[str]  # For API key-authenticated sessions
+    user_id: Optional[int] = None
+    api_key_prefix: Optional[str] = None  # For API key-authenticated sessions
     
     # Session state
     state: SessionState = SessionState.ACTIVE
@@ -260,7 +260,17 @@ class PluginSessionManager:
         return await self._save_session(session)
     
     async def _save_session(self, session: PluginSessionData) -> bool:
-        """Save session to storage."""
+        """Save session to storage.
+
+        If the session has already expired we avoid re-storing it and instead
+        ensure any existing record is removed.  This prevents tests (and
+        real code) from resurrecting expired sessions by updating them.
+        """
+        # If expired, delete and bail out
+        if session.is_expired():
+            await self.delete_session(session.session_id)
+            return False
+
         data = session.to_dict()
         
         if self._use_redis:
@@ -268,7 +278,16 @@ class PluginSessionManager:
                 redis = await self._get_redis()
                 if redis:
                     key = f"{self.SESSION_PREFIX}{session.session_id}"
-                    ttl = timedelta(minutes=self.SESSION_TTL_MINUTES)
+                    # calculate TTL based on session.expires_at if set,
+                    # otherwise fall back to default constant
+                    if session.expires_at:
+                        ttl_seconds = max(0, int((session.expires_at - datetime.now()).total_seconds()))
+                        ttl = timedelta(seconds=ttl_seconds)
+                    else:
+                        ttl = timedelta(minutes=self.SESSION_TTL_MINUTES)
+                    # Ensure non-zero TTL
+                    if ttl.total_seconds() <= 0:
+                        ttl = timedelta(seconds=1)
                     await redis.setex(key, ttl, json.dumps(data))
                     return True
             except Exception as e:
@@ -276,9 +295,14 @@ class PluginSessionManager:
                 self._use_redis = False
         
         # Fallback to local cache
+        cache_ttl = timedelta(minutes=self.SESSION_TTL_MINUTES)
+        if session.expires_at:
+            delta = session.expires_at - datetime.now()
+            if delta.total_seconds() > 0:
+                cache_ttl = delta
         self._local_cache[session.session_id] = {
             "data": data,
-            "expires_at": datetime.now() + timedelta(minutes=self.SESSION_TTL_MINUTES)
+            "expires_at": datetime.now() + cache_ttl
         }
         return True
     

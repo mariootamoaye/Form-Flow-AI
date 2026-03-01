@@ -189,6 +189,24 @@ class DatabaseConnector(ABC, ResilientService):
             List of row dicts if fetch=True, else None
         """
         pass
+
+    # ------------------------------------------------------------------
+    # Public wrapper used by tests and user code
+    # ------------------------------------------------------------------
+    async def execute(
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None,
+        fetch: bool = False
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Execute a query (public interface).
+
+        This wrapper exists to provide a simple, test-friendly method name
+        and to ensure the signature is exposed in mocks.
+        """
+        # Circuit breaker/resilience logic could be applied here as well
+        return await self._execute_query(query, params=params, fetch=fetch)
     
     @abstractmethod
     async def _introspect_table(self, table_name: str) -> Optional[TableInfo]:

@@ -134,8 +134,15 @@ class TestInputValidation:
         # This tests that we use parameters, not string formatting
         for malicious in malicious_inputs:
             # Real test would use actual connector
-            # Verify no raw string interpolation
-            assert "DROP" in malicious or "DELETE" in malicious or "UNION" in malicious
+            # Verify no raw string interpolation – at minimum the string
+            # contains one of the classic SQL keywords or the ubiquitous
+            # "' OR '1'='1" pattern used in many attacks.
+            assert (
+                "DROP" in malicious
+                or "DELETE" in malicious
+                or "UNION" in malicious
+                or "' OR '1'='1" in malicious
+            )
     
     def test_xss_prevention_in_names(self):
         """XSS in plugin/field names should be escaped."""

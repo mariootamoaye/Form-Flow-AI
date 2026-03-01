@@ -32,23 +32,70 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"  # Testing if recovered
 
 
-@dataclass
+@dataclass(init=False)
 class CircuitBreaker:
     """
     Circuit breaker to prevent cascading failures.
-    
-    When failures exceed threshold, circuit opens and rejects calls
-    for a cooldown period before allowing test calls through.
+
+    This implementation is backwards compatible with earlier versions of
+    the library.  Older tests (and potentially external callers) expect
+    a constructor parameter ``reset_timeout`` as well as attributes like
+    ``is_open`` and methods ``allow_request``/``_last_failure_time``.
+    We provide thin wrappers/aliases so both the new and legacy APIs work.
     """
     name: str
     failure_threshold: int = 5
+    # ``reset_timeout`` kept for compatibility with old callers/tests; it
+    # simply maps to ``recovery_timeout``.
     recovery_timeout: int = 30  # seconds
     half_open_calls: int = 3
-    
+
+    # State fields
     state: CircuitState = field(default=CircuitState.CLOSED)
     failure_count: int = field(default=0)
     success_count: int = field(default=0)
     last_failure_time: Optional[datetime] = field(default=None)
+
+    # Custom initializer allows ``reset_timeout`` kwarg and default values.
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 30,
+        half_open_calls: int = 3,
+        *,
+        reset_timeout: int | None = None
+    ):
+        # prefer explicit reset_timeout if provided
+        if reset_timeout is not None:
+            recovery_timeout = reset_timeout
+        # assign fields manually (dataclass will not auto-create init)
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_calls = half_open_calls
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.last_failure_time = None
+
+    # Legacy alias property for tests that inspect the protected attribute
+    @property
+    def _last_failure_time(self) -> Optional[datetime]:
+        return self.last_failure_time
+
+    @_last_failure_time.setter
+    def _last_failure_time(self, value: datetime) -> None:
+        self.last_failure_time = value
+
+    # Convenience property for old ``is_open`` attribute access
+    @property
+    def is_open(self) -> bool:
+        return self.state == CircuitState.OPEN
+
+    # Modern name for ``can_execute``
+    def allow_request(self) -> bool:
+        return self.can_execute()
     
     def can_execute(self) -> bool:
         """Check if a call can be made."""
@@ -70,14 +117,33 @@ class CircuitBreaker:
         return True
     
     def record_success(self):
-        """Record a successful call."""
+        """Record a successful call.
+
+        In HALF_OPEN state we count successes and close the circuit when the
+        required number of consecutive successes is reached.  In OPEN state we
+        also allow a single success to close the circuit once the recovery
+        timeout has elapsed (tests rely on this behaviour).  Otherwise we
+        simply decrement the failure counter to slowly groom it down during
+        normal operation.
+        """
+        now = datetime.now()
         if self.state == CircuitState.HALF_OPEN:
             self.success_count += 1
             if self.success_count >= self.half_open_calls:
                 self.state = CircuitState.CLOSED
                 self.failure_count = 0
                 logger.info(f"Circuit {self.name} closed (recovered)")
+        elif self.state == CircuitState.OPEN:
+            # if enough time has passed, treat this as recovery
+            if self.last_failure_time and (now - self.last_failure_time).seconds >= self.recovery_timeout:
+                self.state = CircuitState.CLOSED
+                self.failure_count = 0
+                logger.info(f"Circuit {self.name} closed after timeout")
+            else:
+                # still open; slowly decrement failure count
+                self.failure_count = max(0, self.failure_count - 1)
         else:
+            # CLOSED or any other state
             self.failure_count = max(0, self.failure_count - 1)
     
     def record_failure(self):

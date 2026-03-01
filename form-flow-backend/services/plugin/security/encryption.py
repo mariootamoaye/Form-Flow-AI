@@ -36,8 +36,15 @@ class EncryptionService:
         decrypted = service.decrypt(encrypted)
     """
     
-    def __init__(self, secret_key: str):
-        """Initialize with secret key for key derivation."""
+    def __init__(self, secret_key: Optional[str] = None):
+        """Initialize with secret key for key derivation.
+
+        If no key is supplied, the global ``settings.SECRET_KEY`` is used.
+        This makes the service easier to instantiate in tests without
+        providing explicit configuration.
+        """
+        if secret_key is None:
+            secret_key = settings.SECRET_KEY
         # Derive 32-byte key from secret using SHA-256
         derived_key = hashlib.sha256(secret_key.encode()).digest()
         self._fernet = Fernet(base64.urlsafe_b64encode(derived_key))
