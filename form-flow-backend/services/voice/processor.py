@@ -2,6 +2,7 @@ from openai import OpenAI
 from typing import Dict, List, Any, Optional
 import json
 import re
+import asyncio
 from services.form.parser import format_email_input
 from config.settings import settings
 
