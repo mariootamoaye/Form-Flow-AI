@@ -881,89 +881,6 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                     )}
                 </AnimatePresence>
 
-                {/* 🧠 Smart Suggestions Modal (Profile-Based) */}
-                <AnimatePresence>
-                    {showSmartSuggestions && smartSuggestions.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: 20, scale: 0.95 }}
-                            transition={{ type: "spring", damping: 25, stiffness: 300 }}
-                            className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-50 w-[500px] max-w-[90%]"
-                        >
-                            <div className="bg-black/60 backdrop-blur-xl rounded-2xl border border-emerald-500/20 shadow-2xl overflow-hidden">
-                                {/* Header */}
-                                <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-500/10 bg-emerald-500/5">
-                                    <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                                            <Brain size={18} className="text-emerald-400" />
-                                        </div>
-                                        <div>
-                                            <div className="text-sm font-semibold text-white flex items-center gap-2">
-                                                Need help with this field?
-                                                {suggestionTier && (
-                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-bold border
-                                        ${suggestionTier === 'profile_based'
-                                                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                                                            : suggestionTier === 'profile_blended'
-                                                                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
-                                                                : 'bg-white/10 text-white/50 border-white/10'
-                                                        }`}>
-                                                        {suggestionTier === 'profile_based' ? '🧠 Personalized' :
-                                                            suggestionTier === 'profile_blended' ? '🎯 Smart' : '⚡ Quick'}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <p className="text-xs text-emerald-400/50 mt-0.5">Based on your behavioral profile</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => setShowSmartSuggestions(false)}
-                                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white transition-colors"
-                                    >
-                                        <X size={14} />
-                                    </button>
-                                </div>
-
-                                {/* Suggestions List */}
-                                <div className="p-3 space-y-2 max-h-[250px] overflow-y-auto custom-scrollbar">
-                                    {smartSuggestions.map((suggestion, idx) => (
-                                        <motion.button
-                                            key={idx}
-                                            initial={{ opacity: 0, x: -10 }}
-                                            animate={{ opacity: 1, x: 0 }}
-                                            transition={{ delay: idx * 0.1 }}
-                                            onClick={() => handleSmartSuggestionSelect(suggestion)}
-                                            className="w-full text-left p-3 rounded-xl bg-white/[0.03] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/30 transition-all group"
-                                        >
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="flex-1">
-                                                    <div className="font-medium text-white group-hover:text-emerald-300 transition-colors">
-                                                        {suggestion.value}
-                                                    </div>
-                                                    {suggestion.reasoning && (
-                                                        <p className="text-xs text-white/40 mt-1 line-clamp-2">
-                                                            {suggestion.reasoning}
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </motion.button>
-                                    ))}
-                                </div>
-
-                                {/* Footer */}
-                                <div className="px-4 py-2 border-t border-emerald-500/10 bg-emerald-500/[0.03]">
-                                    <p className="text-[10px] text-emerald-400/30 text-center font-mono">
-                                        Suggestions improve as you complete more forms • Press any key to dismiss
-                                    </p>
-                                </div>
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-
-
 
                 {/* 2. Main Content Area */}
                 <div className="flex-1 flex overflow-hidden">
@@ -1012,6 +929,73 @@ const VoiceFormFiller = ({ formSchema, formContext, formUrl, initialFilledData, 
                                     </p>
                                 </motion.div>
                             )}
+
+                            {/* Non-blocking copilot suggestions */}
+                            <AnimatePresence>
+                                {showSmartSuggestions && smartSuggestions.length > 0 && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 10 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -10 }}
+                                        className="mt-6 rounded-xl bg-white/[0.03] border border-emerald-500/20 backdrop-blur-md overflow-hidden"
+                                    >
+                                        <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-emerald-500/10 bg-emerald-500/[0.03]">
+                                            <div className="flex items-start gap-2">
+                                                <Brain size={14} className="text-emerald-400 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <div className="text-xs font-semibold text-white/90 uppercase tracking-wider flex items-center gap-2">
+                                                        AI Copilot
+                                                        {suggestionTier && (
+                                                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full border
+                                                    ${suggestionTier === 'profile_based'
+                                                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                                                                    : suggestionTier === 'profile_blended'
+                                                                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                                                                        : 'bg-white/10 text-white/60 border-white/10'
+                                                                }`}>
+                                                                {suggestionTier === 'profile_based' ? 'Personalized' :
+                                                                    suggestionTier === 'profile_blended' ? 'Smart' : 'Quick'}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-xs text-white/45 mt-1">
+                                                        Optional suggestions. Keep typing or tap one.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => setShowSmartSuggestions(false)}
+                                                className="p-1 rounded-md hover:bg-white/10 text-white/40 hover:text-white transition-colors"
+                                                aria-label="Dismiss suggestions"
+                                            >
+                                                <X size={12} />
+                                            </button>
+                                        </div>
+
+                                        <div className="p-3 space-y-2 max-h-[220px] overflow-y-auto custom-scrollbar">
+                                            {smartSuggestions.map((suggestion, idx) => (
+                                                <motion.button
+                                                    key={idx}
+                                                    initial={{ opacity: 0, x: -8 }}
+                                                    animate={{ opacity: 1, x: 0 }}
+                                                    transition={{ delay: idx * 0.05 }}
+                                                    onClick={() => handleSmartSuggestionSelect(suggestion)}
+                                                    className="w-full text-left p-2.5 rounded-lg bg-white/[0.02] hover:bg-emerald-500/10 border border-white/5 hover:border-emerald-500/30 transition-all"
+                                                >
+                                                    <div className="text-sm font-medium text-white/90">
+                                                        {suggestion.value}
+                                                    </div>
+                                                    {suggestion.reasoning && (
+                                                        <p className="text-[11px] text-white/40 mt-1 line-clamp-2">
+                                                            {suggestion.reasoning}
+                                                        </p>
+                                                    )}
+                                                </motion.button>
+                                            ))}
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
 
                             {/* Smart Grouping: Field Slots UI */}
                             {currentBatch.length > 1 && isCurrentFieldInBatch && (
