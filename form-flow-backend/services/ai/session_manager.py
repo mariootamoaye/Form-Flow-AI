@@ -45,16 +45,18 @@ class SessionManager:
         self._redis = redis_client
         self._local_cache: Dict[str, Dict[str, Any]] = {}
         self._use_redis = True
+        self._lock = asyncio.Lock()
         
     async def _get_redis(self):
         """Get Redis client, falling back to local cache if unavailable."""
-        if self._redis is None:
-            try:
-                self._redis = await get_redis_client()
-            except Exception as e:
-                logger.warning(f"Redis unavailable, using local cache: {e}")
-                self._use_redis = False
-        return self._redis
+        async with self._lock:
+            if self._redis is None:
+                try:
+                    self._redis = await get_redis_client()
+                except Exception as e:
+                    logger.warning(f"Redis unavailable, using local cache: {e}")
+                    self._use_redis = False
+            return self._redis
     
     async def save_session(self, session_data: Dict[str, Any]) -> bool:
         """
@@ -74,29 +76,30 @@ class SessionManager:
         # Serialize datetime objects
         serialized = self._serialize_session(session_data)
         
-        if self._use_redis:
-            try:
-                redis = await self._get_redis()
-                if redis:
-                    key = f"{self.SESSION_PREFIX}{session_id}"
-                    await redis.setex(
-                        key,
-                        timedelta(minutes=self.SESSION_TTL_MINUTES),
-                        json.dumps(serialized)
-                    )
-                    logger.debug(f"Saved session {session_id} to Redis")
-                    return True
-            except Exception as e:
-                logger.warning(f"Redis save failed, using local cache: {e}")
-                self._use_redis = False
-        
-        # Fallback to local cache
-        self._local_cache[session_id] = {
-            'data': serialized,
-            'expires_at': datetime.now() + timedelta(minutes=self.SESSION_TTL_MINUTES)
-        }
-        logger.debug(f"Saved session {session_id} to local cache")
-        return True
+        async with self._lock:
+            if self._use_redis:
+                try:
+                    redis = await self._get_redis()
+                    if redis:
+                        key = f"{self.SESSION_PREFIX}{session_id}"
+                        await redis.setex(
+                            key,
+                            timedelta(minutes=self.SESSION_TTL_MINUTES),
+                            json.dumps(serialized)
+                        )
+                        logger.debug(f"Saved session {session_id} to Redis")
+                        return True
+                except Exception as e:
+                    logger.warning(f"Redis save failed, using local cache: {e}")
+                    self._use_redis = False
+            
+            # Fallback to local cache
+            self._local_cache[session_id] = {
+                'data': serialized,
+                'expires_at': datetime.now() + timedelta(minutes=self.SESSION_TTL_MINUTES)
+            }
+            logger.debug(f"Saved session {session_id} to local cache")
+            return True
     
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -108,67 +111,70 @@ class SessionManager:
         Returns:
             Session data dictionary or None if not found/expired
         """
-        if self._use_redis:
-            try:
-                redis = await self._get_redis()
-                if redis:
-                    key = f"{self.SESSION_PREFIX}{session_id}"
-                    data = await redis.get(key)
-                    if data:
-                        session = json.loads(data)
-                        return self._deserialize_session(session)
-            except Exception as e:
-                logger.warning(f"Redis get failed: {e}")
-                self._use_redis = False
-        
-        # Check local cache
-        cached = self._local_cache.get(session_id)
-        if cached:
-            if cached['expires_at'] > datetime.now():
-                return self._deserialize_session(cached['data'])
-            else:
-                del self._local_cache[session_id]
-        
-        return None
+        async with self._lock:
+            if self._use_redis:
+                try:
+                    redis = await self._get_redis()
+                    if redis:
+                        key = f"{self.SESSION_PREFIX}{session_id}"
+                        data = await redis.get(key)
+                        if data:
+                            session = json.loads(data)
+                            return self._deserialize_session(session)
+                except Exception as e:
+                    logger.warning(f"Redis get failed: {e}")
+                    self._use_redis = False
+            
+            # Check local cache
+            cached = self._local_cache.get(session_id)
+            if cached:
+                if cached['expires_at'] > datetime.now():
+                    return self._deserialize_session(cached['data'])
+                else:
+                    del self._local_cache[session_id]
+            
+            return None
     
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session."""
-        if self._use_redis:
-            try:
-                redis = await self._get_redis()
-                if redis:
-                    key = f"{self.SESSION_PREFIX}{session_id}"
-                    await redis.delete(key)
-                    logger.debug(f"Deleted session {session_id} from Redis")
-            except Exception as e:
-                logger.warning(f"Redis delete failed: {e}")
-        
-        # Also remove from local cache
-        if session_id in self._local_cache:
-            del self._local_cache[session_id]
-        
-        return True
+        async with self._lock:
+            if self._use_redis:
+                try:
+                    redis = await self._get_redis()
+                    if redis:
+                        key = f"{self.SESSION_PREFIX}{session_id}"
+                        await redis.delete(key)
+                        logger.debug(f"Deleted session {session_id} from Redis")
+                except Exception as e:
+                    logger.warning(f"Redis delete failed: {e}")
+            
+            # Also remove from local cache
+            if session_id in self._local_cache:
+                del self._local_cache[session_id]
+            
+            return True
     
     async def extend_session(self, session_id: str) -> bool:
         """Extend session TTL by the standard amount."""
-        if self._use_redis:
-            try:
-                redis = await self._get_redis()
-                if redis:
-                    key = f"{self.SESSION_PREFIX}{session_id}"
-                    await redis.expire(key, timedelta(minutes=self.SESSION_TTL_MINUTES))
-                    return True
-            except Exception as e:
-                logger.warning(f"Redis expire failed: {e}")
-        
-        # Extend local cache
-        if session_id in self._local_cache:
-            self._local_cache[session_id]['expires_at'] = (
-                datetime.now() + timedelta(minutes=self.SESSION_TTL_MINUTES)
-            )
-            return True
-        
-        return False
+        async with self._lock:
+            if self._use_redis:
+                try:
+                    redis = await self._get_redis()
+                    if redis:
+                        key = f"{self.SESSION_PREFIX}{session_id}"
+                        await redis.expire(key, timedelta(minutes=self.SESSION_TTL_MINUTES))
+                        return True
+                except Exception as e:
+                    logger.warning(f"Redis expire failed: {e}")
+            
+            # Extend local cache
+            if session_id in self._local_cache:
+                self._local_cache[session_id]['expires_at'] = (
+                    datetime.now() + timedelta(minutes=self.SESSION_TTL_MINUTES)
+                )
+                return True
+            
+            return False
     
     async def cleanup_local_cache(self) -> int:
         """Remove expired sessions from local cache. Returns count removed."""

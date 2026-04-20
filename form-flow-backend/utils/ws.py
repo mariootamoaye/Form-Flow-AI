@@ -42,12 +42,18 @@ class ConnectionManager:
                 for conns in self._connections.values():
                     targets.extend(list(conns))
 
+        # Collect dead connections to disconnect after iteration
+        dead_connections = []
         for ws in targets:
             try:
                 await ws.send_json(message)
             except Exception:
-                # Drop dead connections silently
-                await self.disconnect(ws, client_id or "global")
+                # Mark dead connection for removal after iteration
+                dead_connections.append(ws)
+
+        # Disconnect dead connections outside the broadcast loop
+        for ws in dead_connections:
+            await self.disconnect(ws, client_id or "global")
 
 
 # Singleton manager
