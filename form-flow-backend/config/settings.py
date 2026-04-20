@@ -12,9 +12,10 @@ Usage:
 """
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, ConfigDict
+from pydantic import Field, ConfigDict, field_validator
 from typing import List, Optional
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
@@ -24,6 +25,8 @@ class Settings(BaseSettings):
     All settings can be overridden via environment variables or .env file.
     Variable names are case-insensitive.
     """
+    
+    model_config = ConfigDict(extra="ignore")
     
     # ==========================================================================
     # Database Configuration
@@ -36,10 +39,25 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Authentication & Security
     # ==========================================================================
-    SECRET_KEY: str = Field(
-        default="your_super_secret_key_change_this_in_production",
-        description="JWT signing secret key"
+    SECRET_KEY: Optional[str] = Field(
+        default=None,
+        description="JWT signing secret key (REQUIRED - set via SECRET_KEY env var)"
     )
+    
+    @field_validator('SECRET_KEY', mode='before')
+    @classmethod
+    def validate_secret_key(cls, v):
+        if v is None or v == "":
+            raise ValueError(
+                "SECRET_KEY is required for production. "
+                "Set SECRET_KEY environment variable."
+            )
+        if len(v) < 32:
+            raise ValueError(
+                "SECRET_KEY must be at least 32 characters for security."
+            )
+        return v
+    
     ALGORITHM: str = Field(
         default="HS256",
         description="JWT signing algorithm"
@@ -109,6 +127,22 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list:
         """Get CORS origins as a list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+    
+    CORS_CHROME_EXTENSIONS: str = Field(
+        default="",
+        description="Allowed Chrome extension IDs (comma-separated, e.g., 'ext1,ext2')"
+    )
+    
+    @property
+    def cors_chrome_extension_regex(self) -> str:
+        """Get regex pattern for allowed Chrome extensions."""
+        if not self.CORS_CHROME_EXTENSIONS:
+            return ""  # No Chrome extensions allowed
+        # Build regex: chrome-extension://(ext1|ext2|...)
+        ext_ids = [e.strip() for e in self.CORS_CHROME_EXTENSIONS.split(",") if e.strip()]
+        if not ext_ids:
+            return ""
+        return f"chrome-extension://({'|'.join(ext_ids)})"
     
     # ==========================================================================
     # Application Settings

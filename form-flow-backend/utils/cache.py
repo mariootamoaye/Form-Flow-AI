@@ -75,6 +75,9 @@ async def get_redis_client():
 # In-Memory Fallback Cache
 # =============================================================================
 
+import time
+
+# Memory cache with TTL support: {key: (value, expiry_timestamp)}
 _memory_cache: dict = {}
 
 
@@ -102,8 +105,16 @@ async def get_cached(key: str) -> Optional[Any]:
         except Exception as e:
             logger.debug(f"Redis get failed: {e}")
     
-    # Fallback to memory
-    return _memory_cache.get(key)
+    # Fallback to memory - check TTL expiration
+    entry = _memory_cache.get(key)
+    if entry is not None:
+        value, expiry = entry
+        if time.time() < expiry:
+            return value
+        else:
+            # Entry expired, remove it
+            del _memory_cache[key]
+    return None
 
 
 async def set_cached(
@@ -131,8 +142,9 @@ async def set_cached(
         except Exception as e:
             logger.debug(f"Redis set failed: {e}")
     
-    # Fallback to memory (no TTL support)
-    _memory_cache[key] = value
+    # Fallback to memory with TTL
+    expiry = time.time() + ttl
+    _memory_cache[key] = (value, expiry)
     return True
 
 
@@ -146,7 +158,14 @@ async def delete_cached(key: str) -> bool:
         except Exception:
             pass
     
-    _memory_cache.pop(key, None)
+    # Handle both old format (direct value) and new format (tuple)
+    entry = _memory_cache.get(key)
+    if entry is not None:
+        if isinstance(entry, tuple):
+            _memory_cache.pop(key, None)
+        else:
+            # Legacy format - just delete
+            _memory_cache.pop(key, None)
     return True
 
 
@@ -172,7 +191,8 @@ async def clear_cache_pattern(pattern: str) -> int:
             logger.debug(f"Redis pattern clear failed: {e}")
     
     # Clear from memory cache too
-    keys_to_delete = [k for k in _memory_cache if k.startswith(pattern.replace("*", ""))]
+    prefix = pattern.replace("*", "")
+    keys_to_delete = [k for k in _memory_cache if k.startswith(prefix)]
     for key in keys_to_delete:
         del _memory_cache[key]
         count += 1

@@ -58,8 +58,7 @@ class ComprehensiveFormRequest(BaseModel):
 class MagicFillRequest(BaseModel):
     form_schema: List[Dict[str, Any]]
     user_profile: Dict[str, Any] = {}  # Optional extra profile data
-    form_url: Optional[str] = None
-    form_url: str = "" # Required for caching
+    form_url: str = ""  # Optional form URL for caching
 
 router = APIRouter(tags=["Forms & Automation"])
 

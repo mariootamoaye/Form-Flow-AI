@@ -155,5 +155,5 @@ async def get_page_info(page) -> Dict[str, Any]:
                 language: document.documentElement.lang || 'en'
             })
         """)
-    except:
+    except Exception:
         return {}

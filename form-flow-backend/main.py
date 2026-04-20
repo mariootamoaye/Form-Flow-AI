@@ -164,6 +164,8 @@ app.state.limiter = limiter
 # =============================================================================
 
 # Allow requests from Chrome extension and localhost development
+# Only allow specific Chrome extension IDs (configure via CORS_CHROME_EXTENSIONS env var)
+cors_regex = settings.cors_chrome_extension_regex
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -173,7 +175,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
     ],
-    allow_origin_regex='chrome-extension://.*',  # Allow all Chrome extensions
+    allow_origin_regex=cors_regex if cors_regex else None,  # Only specific extensions or none
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
