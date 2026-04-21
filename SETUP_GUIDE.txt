@@ -58,6 +58,9 @@ Open a terminal and run:
 --------------------------------
     pip install -r requirements.txt
 
+    # NOTE (personal): On Python 3.12 I ran into a build error with one of the
+    # dependencies. Pinning to Python 3.10 or 3.11 via pyenv resolved it.
+
 2.3 Install Playwright Browser (for form automation)
 -----------------------------------------------------
     playwright install chromium
@@ -82,8 +85,4 @@ Edit the .env file with your settings:
     # Tip: run `python -c "import secrets; print(secrets.token_hex(32))"` to generate one
     SECRET_KEY=your_super_secret_key_here
 
-    # ============ OPTIONAL ============
-    # Alternative LLM provider
-    OPENAI_API_KEY=your_openai_api_key_here
-
-    # Enhanc
+    # ============ OPTIONAL ===========
